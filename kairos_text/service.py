@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 
 from kairos_core.bus import build_bus
+from kairos_core.contracts import LLMHealthEvent
 from kairos_core.logging import configure_logging, get_logger
 from kairos_core.topics import Topics
 
@@ -23,8 +24,13 @@ class TextScoutsService:
         self.source = RSSSource(self.settings.rss_feeds)
         if gateway is None:
             from kairos_llm import LLMGateway  # lazy: only needed at runtime
-            gateway = LLMGateway()
+            gateway = LLMGateway(on_health=self._publish_health)
         self.extractor = SentimentExtractor(gateway, source=self.settings.service_name)
+
+    async def _publish_health(self, model: str, provider: str, ok: bool, kind: str, latency_s: float) -> None:
+        await self.bus.publish(Topics.LLM_HEALTH, LLMHealthEvent(
+            source=self.settings.service_name, provider=provider, model=model,
+            ok=ok, kind=kind, latency_s=latency_s))
 
     async def run(self) -> None:  # pragma: no cover - network
         configure_logging(self.settings.log_level, json_logs=self.settings.log_json, service=self.settings.service_name)
