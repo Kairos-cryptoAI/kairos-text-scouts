@@ -1,4 +1,10 @@
-"""Turn a batch of relevant items into SentimentSignal messages via the LLM gateway."""
+"""Turn a batch of relevant items into SentimentSignal messages via the LLM gateway.
+
+The LLM call runs at ``ReasoningEffort.LOW``, which kairos-llm routes to
+DeepSeek-V4-Flash in non-thinking mode. If that model is unavailable the extractor
+degrades to a deterministic local fallback (see :mod:`kairos_text.local`) so the
+Router keeps receiving a coarse text bias instead of going blind.
+"""
 from __future__ import annotations
 
 from typing import List, Sequence
@@ -6,6 +12,7 @@ from typing import List, Sequence
 from kairos_core.contracts import SentimentSignal
 from kairos_core.enums import ImpactDirection, ReasoningEffort
 
+from .local import local_sentiment
 from .models import NewsItem
 from .prompts import SENTIMENT_SYSTEM
 
@@ -24,9 +31,13 @@ class SentimentExtractor:
     async def extract(self, items: Sequence[NewsItem]) -> List[SentimentSignal]:
         if not items:
             return []
-        res = await self.gateway.complete(
-            system=SENTIMENT_SYSTEM, user=self._format_batch(items), effort=ReasoningEffort.LOW
-        )
+        try:
+            res = await self.gateway.complete(
+                system=SENTIMENT_SYSTEM, user=self._format_batch(items), effort=ReasoningEffort.LOW
+            )
+        except Exception:
+            # DeepSeek-V4-Flash unavailable -> degrade to local filtering mode.
+            return local_sentiment(items, source=f"{self.source}:local")
         data = res.parsed if isinstance(res.parsed, dict) else {}
         signals: List[SentimentSignal] = []
         for raw in data.get("signals", []):

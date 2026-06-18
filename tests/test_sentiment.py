@@ -25,3 +25,18 @@ def test_extracts_and_skips_malformed():
 def test_empty_batch_returns_nothing():
     ex = SentimentExtractor(FakeGateway())
     assert asyncio.run(ex.extract([])) == []
+
+
+class FailingGateway:
+    async def complete(self, *, system, user, effort, schema=None):
+        raise RuntimeError("deepseek-v4-flash 503")
+
+
+def test_local_fallback_when_flash_unavailable():
+    ex = SentimentExtractor(FailingGateway())
+    items = [NewsItem(title="Bitcoin ETF approval sparks record rally"),
+             NewsItem(title="Major exchange hack triggers selloff")]
+    sigs = asyncio.run(ex.extract(items))
+    assert len(sigs) == 2
+    assert all(s.source.endswith(":local") for s in sigs)
+    assert all(s.confidence <= 0.3 for s in sigs)  # degraded confidence
