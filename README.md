@@ -13,7 +13,7 @@ Example output (matches the spec): `{"topic": "SEC ETF", "sentiment": 0.85, "imp
 
 The local filter is a transparent keyword/impact scorer exposing a `select()` interface, so
 a real transformer (BERT/FinBERT) can be dropped in without touching the rest of the layer.
-The LLM call goes through [`kairos-llm`](https://github.com/TheLitis/kairos-llm).
+The LLM call goes through [`kairos-llm`](https://github.com/Kairos-cryptoAI/kairos-llm).
 
 ## Run
 ```bash
@@ -24,4 +24,4 @@ python -m kairos_text
 Emits `kairos.sentiment.signal`.
 
 ---
-Part of the [Kairos](https://github.com/TheLitis/kairos) system. MIT licensed.
+Part of the [Kairos](https://github.com/Kairos-cryptoAI/kairos) system. MIT licensed.
