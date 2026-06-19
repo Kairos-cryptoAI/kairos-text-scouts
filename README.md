@@ -18,11 +18,11 @@ Example output (matches the spec): `{"topic": "SEC ETF", "sentiment": 0.85, "imp
 | **GDELT** DOC 2.0 | free official news API — already indexes Reuters, Bloomberg, CNBC, Coindesk… | $0 | always |
 | **RSS** | Coindesk + Cointelegraph (crypto-native backstop) | $0 | always |
 | **X / Twitter** | Bright Data **Web Scraper API** — live scrape of influencer handles (sync `/scrape`, async fallback) | metered | when token + dataset id set |
-| **Reddit** | Bright Data **Web Scraper API** — live scrape of subreddits | metered | when token + dataset id set |
+| **Reddit** | **official Reddit API** (OAuth2 application-only) — newest posts per subreddit | $0 | when client id + secret set |
 
-> The social sources use Bright Data's **Web Scraper API** (on-demand live scraping), **not** the
-> static Dataset Marketplace — every poll fetches fresh posts. Calls prefer the synchronous
-> real-time endpoint (≤20 URLs) and only fall back to the async snapshot flow for long jobs.
+> **X** uses Bright Data's **Web Scraper API** (on-demand live scraping, **not** the static Dataset
+> Marketplace; sync `/scrape` with async fallback). **Reddit** uses the **official Reddit API**
+> (free, OAuth2 application-only) — every poll fetches the newest posts.
 
 Each source is isolated: one provider failing (e.g. GDELT rate-limiting) never blinds the
 layer. Reuters/Bloomberg no longer publish public RSS, so GDELT covers them. A real
@@ -34,10 +34,12 @@ If DeepSeek-Flash is down the layer degrades to a deterministic local keyword se
 # News (free, on by default)
 KAIROS_GDELT_QUERY='(bitcoin OR btc OR ethereum OR eth OR crypto OR etf OR sec OR cpi) sourcelang:english'
 KAIROS_GDELT_TIMESPAN=15min
-# Social (optional — set a token + dataset ids to enable)
+# X / Twitter (optional — Bright Data Web Scraper API)
 KAIROS_BRIGHTDATA_API_TOKEN=...
 KAIROS_BRIGHTDATA_X_DATASET_ID=...
-KAIROS_BRIGHTDATA_REDDIT_DATASET_ID=...
+# Reddit (optional — official Reddit API, free; register an app at reddit.com/prefs/apps)
+KAIROS_REDDIT_CLIENT_ID=...
+KAIROS_REDDIT_CLIENT_SECRET=...
 ```
 
 ## Run
