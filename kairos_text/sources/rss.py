@@ -1,7 +1,9 @@
-"""Minimal async RSS reader (Bloomberg / Reuters / Coindesk feeds).
+"""Minimal async RSS reader — the resilient fallback source.
 
-Kept dependency-light: parses the handful of fields we need from the XML. For a
-production deployment, swap in ``feedparser`` behind the same ``fetch`` method.
+GDELT is the primary news firehose; RSS stays as a cheap, dependency-light backstop
+for a couple of crypto-native outlets (Coindesk, Cointelegraph). Reuters/Bloomberg
+no longer publish public RSS, so we rely on GDELT for those. Parses only the handful
+of fields we need; swap in ``feedparser`` behind the same ``fetch`` for production.
 """
 from __future__ import annotations
 
@@ -17,11 +19,19 @@ except Exception:  # pragma: no cover
     aiohttp = None  # type: ignore
 
 _TAG = re.compile(r"<[^>]+>")
+_UA = "kairos-text-scouts/0.1 (+https://github.com/Kairos-cryptoAI)"
 
 
 class RSSSource:
-    def __init__(self, feeds: List[str]) -> None:
+    name = "rss"
+
+    def __init__(self, feeds: List[str], *, enabled: bool = True) -> None:
         self.feeds = feeds
+        self._enabled = enabled
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled and bool(self.feeds)
 
     @staticmethod
     def _parse(xml: str, source: str) -> List[NewsItem]:
@@ -35,14 +45,15 @@ class RSSSource:
             desc = _TAG.sub("", item.findtext("description") or "").strip()
             link = (item.findtext("link") or "").strip()
             if title:
-                items.append(NewsItem(title=title, body=desc, url=link, source=source))
+                items.append(NewsItem(title=title, body=desc, url=link,
+                                      source=source, source_kind="rss"))
         return items
 
     async def fetch(self) -> List[NewsItem]:  # pragma: no cover - network
         if aiohttp is None:
             return []
         out: List[NewsItem] = []
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(headers={"User-Agent": _UA}) as session:
             for feed in self.feeds:
                 try:
                     async with session.get(feed, timeout=10) as resp:
