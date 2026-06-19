@@ -1,8 +1,9 @@
-"""Twitter/X source via the Bright Data Dataset API (token-gated).
+"""Twitter/X source via the Bright Data Web Scraper API (token-gated, real-time).
 
-Given a list of influencer handles, returns their latest posts as NewsItems with an
-``engagement`` score (likes + reposts) so loud, high-signal posts survive the
-relevance filter. Disabled automatically unless an API token + dataset id are set.
+Given a list of influencer handles, scrapes their latest posts live (sync /scrape,
+async fallback) and returns them as NewsItems with an ``engagement`` score (likes +
+reposts) so loud, high-signal posts survive the relevance filter. Disabled
+automatically unless an API token + dataset id are set.
 """
 from __future__ import annotations
 
@@ -31,7 +32,7 @@ class BrightDataXSource:
         return bool(self._enabled and self.token and self.dataset_id and self.accounts)
 
     def _inputs(self) -> List[Dict[str, Any]]:
-        return [{"url": f"https://x.com/{a.lstrip('@')}", "num_of_posts": self.num_posts}
+        return [{"url": f"https://x.com/{a.removeprefix('@')}", "num_of_posts": self.num_posts}
                 for a in self.accounts]
 
     @staticmethod

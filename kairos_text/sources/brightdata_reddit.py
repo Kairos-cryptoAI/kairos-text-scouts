@@ -1,7 +1,8 @@
-"""Reddit source via the Bright Data Dataset API (token-gated).
+"""Reddit source via the Bright Data Web Scraper API (token-gated, real-time).
 
-Given a list of subreddits, returns recent posts as NewsItems with an ``engagement``
-score (upvotes). Disabled automatically unless an API token + dataset id are set.
+Given a list of subreddits, scrapes recent posts live (sync /scrape, async fallback)
+and returns them as NewsItems with an ``engagement`` score (upvotes). Disabled
+automatically unless an API token + dataset id are set.
 """
 from __future__ import annotations
 
@@ -28,7 +29,7 @@ class BrightDataRedditSource:
         return bool(self._enabled and self.token and self.dataset_id and self.subreddits)
 
     def _inputs(self) -> List[Dict[str, Any]]:
-        return [{"url": f"https://www.reddit.com/r/{s.lstrip('r/').strip('/')}/"} for s in self.subreddits]
+        return [{"url": f"https://www.reddit.com/r/{s.removeprefix('r/').strip('/')}/"} for s in self.subreddits]
 
     @staticmethod
     def parse(records: List[Dict[str, Any]]) -> List[NewsItem]:
