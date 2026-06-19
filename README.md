@@ -17,8 +17,12 @@ Example output (matches the spec): `{"topic": "SEC ETF", "sentiment": 0.85, "imp
 | --- | --- | --- | --- |
 | **GDELT** DOC 2.0 | free official news API — already indexes Reuters, Bloomberg, CNBC, Coindesk… | $0 | always |
 | **RSS** | Coindesk + Cointelegraph (crypto-native backstop) | $0 | always |
-| **X / Twitter** | Bright Data Dataset API (influencer handles) | metered | when token + dataset id set |
-| **Reddit** | Bright Data Dataset API (subreddits) | metered | when token + dataset id set |
+| **X / Twitter** | Bright Data **Web Scraper API** — live scrape of influencer handles (sync `/scrape`, async fallback) | metered | when token + dataset id set |
+| **Reddit** | Bright Data **Web Scraper API** — live scrape of subreddits | metered | when token + dataset id set |
+
+> The social sources use Bright Data's **Web Scraper API** (on-demand live scraping), **not** the
+> static Dataset Marketplace — every poll fetches fresh posts. Calls prefer the synchronous
+> real-time endpoint (≤20 URLs) and only fall back to the async snapshot flow for long jobs.
 
 Each source is isolated: one provider failing (e.g. GDELT rate-limiting) never blinds the
 layer. Reuters/Bloomberg no longer publish public RSS, so GDELT covers them. A real
