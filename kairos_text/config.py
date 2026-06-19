@@ -34,13 +34,19 @@ class TextSettings(CoreSettings):
         "https://cointelegraph.com/rss",
     ]
 
-    # --- Social via Bright Data (managed API; no proxy/scrapers of our own) ---
+    # --- X / Twitter via Bright Data Web Scraper API (token-gated) ---
     brightdata_api_token: str = ""
     brightdata_x_dataset_id: str = ""
-    brightdata_reddit_dataset_id: str = ""
     brightdata_poll_timeout_s: float = 90.0
     x_accounts: List[str] = ["elonmusk", "lookonchain", "whale_alert", "cz_binance"]
     x_num_posts: int = 10
+
+    # --- Reddit via the official Reddit API (OAuth2 application-only; free) ---
+    reddit_client_id: str = ""
+    reddit_client_secret: str = ""
+    reddit_user_agent: str = "kairos-text-scouts/0.1 by Kairos-cryptoAI"
+    reddit_listing: str = "new"          # freshest first
+    reddit_limit: int = 25
     subreddits: List[str] = ["CryptoCurrency", "Bitcoin", "ethfinance"]
 
     @property
@@ -49,4 +55,4 @@ class TextSettings(CoreSettings):
 
     @property
     def enable_reddit(self) -> bool:
-        return bool(self.brightdata_api_token and self.brightdata_reddit_dataset_id and self.subreddits)
+        return bool(self.reddit_client_id and self.reddit_client_secret and self.subreddits)
