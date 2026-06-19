@@ -28,7 +28,7 @@ from .filter import LocalRelevanceFilter
 from .models import NewsItem
 from .normalize import EventNormalizer
 from .sentiment import SentimentExtractor
-from .sources import BrightDataRedditSource, BrightDataXSource, EventSource, GDELTSource, RSSSource
+from .sources import BrightDataXSource, EventSource, GDELTSource, RedditSource, RSSSource
 
 log = get_logger("text-scouts")
 
@@ -61,10 +61,10 @@ class TextScoutsService:
                                              accounts=s.x_accounts, num_posts=s.x_num_posts,
                                              poll_timeout_s=s.brightdata_poll_timeout_s))
         if s.enable_reddit:
-            sources.append(BrightDataRedditSource(token=s.brightdata_api_token,
-                                                  dataset_id=s.brightdata_reddit_dataset_id,
-                                                  subreddits=s.subreddits,
-                                                  poll_timeout_s=s.brightdata_poll_timeout_s))
+            sources.append(RedditSource(client_id=s.reddit_client_id,
+                                        client_secret=s.reddit_client_secret,
+                                        user_agent=s.reddit_user_agent, subreddits=s.subreddits,
+                                        listing=s.reddit_listing, limit=s.reddit_limit))
         return sources
 
     async def _gather(self) -> List[NewsItem]:
