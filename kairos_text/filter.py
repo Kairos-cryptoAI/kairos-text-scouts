@@ -3,7 +3,8 @@
 The spec calls for a local model (e.g. BERT) that throws away ~95% of incoming
 items before the LLM is invoked. This is a transparent keyword/impact scorer
 exposing the same ``select`` interface, so a real transformer can be dropped in
-later without touching the rest of the layer.
+later without touching the rest of the layer. Social items get a small bonus
+proportional to engagement (likes/upvotes) so loud, high-signal posts survive.
 """
 from __future__ import annotations
 
@@ -23,15 +24,23 @@ IMPACT_TERMS = {
 
 
 class LocalRelevanceFilter:
-    def __init__(self, threshold: float = 3.0, top_k: int = 5) -> None:
+    def __init__(self, threshold: float = 3.0, top_k: int = 5, *,
+                 engagement_scale: float = 500.0, engagement_cap: float = 2.0) -> None:
         self.threshold = threshold
         self.top_k = top_k
+        self.engagement_scale = engagement_scale
+        self.engagement_cap = engagement_cap
+
+    def _engagement_bonus(self, item: NewsItem) -> float:
+        if item.engagement <= 0 or self.engagement_scale <= 0:
+            return 0.0
+        return min(self.engagement_cap, item.engagement / self.engagement_scale)
 
     def score(self, item: NewsItem) -> float:
         text = item.text.lower()
         s = sum(w for term, w in RELEVANCE_TERMS.items() if term in text)
         s += sum(w for term, w in IMPACT_TERMS.items() if term in text)
-        return float(s)
+        return float(s) + self._engagement_bonus(item)
 
     def select(self, items: Sequence[NewsItem]) -> List[NewsItem]:
         scored = [(self.score(it), it) for it in items]
