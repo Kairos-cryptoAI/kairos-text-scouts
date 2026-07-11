@@ -77,7 +77,9 @@ class RedditSource:
             ))
         return items
 
-    async def _access_token(self, session: "aiohttp.ClientSession") -> str | None:  # pragma: no cover - network
+    async def _access_token(  # pragma: no cover - network
+        self, session: "aiohttp.ClientSession"
+    ) -> str | None:
         auth = aiohttp.BasicAuth(self.client_id, self.client_secret)
         async with session.post(self.token_url, auth=auth,
                                 data={"grant_type": "client_credentials"},

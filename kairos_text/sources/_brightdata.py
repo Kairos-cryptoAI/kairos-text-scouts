@@ -70,8 +70,14 @@ def _rows(data: Any) -> List[Dict[str, Any]]:
     return []
 
 
-async def _await_snapshot(session: "aiohttp.ClientSession", snapshot_id: str, *, base_url: str,
-                          poll_timeout_s: float, poll_interval_s: float) -> List[Dict[str, Any]]:  # pragma: no cover - network
+async def _await_snapshot(  # pragma: no cover - network
+    session: "aiohttp.ClientSession",
+    snapshot_id: str,
+    *,
+    base_url: str,
+    poll_timeout_s: float,
+    poll_interval_s: float,
+) -> List[Dict[str, Any]]:
     """Async fallback: poll a snapshot to completion, then download it."""
     loop = asyncio.get_event_loop()
     deadline = loop.time() + poll_timeout_s
@@ -85,7 +91,9 @@ async def _await_snapshot(session: "aiohttp.ClientSession", snapshot_id: str, *,
         await asyncio.sleep(poll_interval_s)
     else:
         return []
-    async with session.get(f"{base_url}/snapshot/{snapshot_id}", params={"format": "json"}, timeout=60) as resp:
+    async with session.get(
+        f"{base_url}/snapshot/{snapshot_id}", params={"format": "json"}, timeout=60
+    ) as resp:
         if resp.status != 200:
             return []
         return _rows(await resp.json(content_type=None))
