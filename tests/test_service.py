@@ -30,6 +30,14 @@ class _FakeGateway:
              "confidence": 0.9, "summary": "approval"}]})
 
 
+class _CancelledSource:
+    name = "cancelled"
+    enabled = True
+
+    async def fetch(self):
+        raise asyncio.CancelledError
+
+
 def test_poll_once_aggregates_dedups_filters_and_publishes():
     items = [
         NewsItem(title="SEC approves spot Bitcoin ETF", url="https://a/1", source_kind="gdelt"),
@@ -40,3 +48,15 @@ def test_poll_once_aggregates_dedups_filters_and_publishes():
                             gateway=_FakeGateway(), sources=[_StubSource(items)])
     published = asyncio.run(svc.poll_once())
     assert published == 1   # dup collapsed, noise filtered, one signal emitted
+
+
+def test_gather_propagates_source_cancellation():
+    svc = TextScoutsService(
+        TextSettings(bus_backend="memory"), gateway=_FakeGateway(), sources=[_CancelledSource()]
+    )
+    try:
+        asyncio.run(svc._gather())
+    except asyncio.CancelledError:
+        pass
+    else:
+        raise AssertionError("source cancellation must propagate to stop the service")

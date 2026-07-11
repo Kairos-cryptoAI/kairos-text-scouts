@@ -72,7 +72,10 @@ class TextScoutsService:
         results = await asyncio.gather(*(src.fetch() for src in active), return_exceptions=True)
         items: List[NewsItem] = []
         for src, res in zip(active, results, strict=False):
-            if isinstance(res, Exception):
+            if isinstance(res, asyncio.CancelledError):
+                # Cancellation is lifecycle control, not a recoverable source error.
+                raise res
+            if isinstance(res, BaseException):
                 log.warning("source.error", source=src.name, error=str(res))
                 continue
             items.extend(res)
