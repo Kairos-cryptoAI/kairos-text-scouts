@@ -14,6 +14,7 @@ dependencies = [
     "kairos-core>=0.1.0",
     "kairos-llm>=0.1.0",
     "aiohttp>=3.9",
+    "defusedxml>=0.7.1",
     "redis>=5.0",
     "structlog>=24.1",
     "pydantic>=2.6",

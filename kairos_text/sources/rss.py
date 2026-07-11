@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import re
 from typing import List
-from xml.etree import ElementTree as ET
+
+from defusedxml import ElementTree as ET
+from defusedxml.common import DefusedXmlException
 
 from ..models import NewsItem
 
@@ -38,7 +40,7 @@ class RSSSource:
         items: List[NewsItem] = []
         try:
             root = ET.fromstring(xml)
-        except ET.ParseError:
+        except (ET.ParseError, DefusedXmlException):
             return items
         for item in root.iter("item"):
             title = (item.findtext("title") or "").strip()
