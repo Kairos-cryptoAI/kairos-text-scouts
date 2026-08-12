@@ -11,21 +11,23 @@ rotate user-agents or fight captchas/403s ourselves.
 All network here is ``pragma: no cover``; the per-record mappers in the X / Reddit
 sources are pure and unit-tested.
 """
+
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from collections.abc import Sequence
+from datetime import UTC, datetime
+from typing import Any
 
-try:
-    import aiohttp
-except Exception:  # pragma: no cover
-    aiohttp = None  # type: ignore
+import aiohttp
 
 API_BASE = "https://api.brightdata.com/datasets/v3"
+_POLL_TIMEOUT = aiohttp.ClientTimeout(total=30)
+_SNAPSHOT_TIMEOUT = aiohttp.ClientTimeout(total=60)
+_SCRAPE_TIMEOUT = aiohttp.ClientTimeout(total=90)
 
 
-def first(record: Dict[str, Any], keys: Sequence[str], default: str = "") -> Any:
+def first(record: dict[str, Any], keys: Sequence[str], default: str = "") -> Any:
     """First non-empty value among ``keys`` (record schemas vary by dataset)."""
     for key in keys:
         value = record.get(key)
@@ -34,7 +36,7 @@ def first(record: Dict[str, Any], keys: Sequence[str], default: str = "") -> Any
     return default
 
 
-def num(record: Dict[str, Any], keys: Sequence[str]) -> float:
+def num(record: dict[str, Any], keys: Sequence[str]) -> float:
     """Sum of the numeric values found under ``keys`` (engagement metrics)."""
     total = 0.0
     for key in keys:
@@ -49,20 +51,20 @@ def num(record: Dict[str, Any], keys: Sequence[str]) -> float:
 
 def to_dt(value: Any) -> datetime:
     if value in (None, ""):
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
     if isinstance(value, (int, float)):
         try:
-            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+            return datetime.fromtimestamp(float(value), tz=UTC)
         except (OverflowError, OSError, ValueError):  # pragma: no cover - defensive
-            return datetime.now(timezone.utc)
+            return datetime.now(UTC)
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
     except ValueError:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
 
 
-def _rows(data: Any) -> List[Dict[str, Any]]:
+def _rows(data: Any) -> list[dict[str, Any]]:
     if isinstance(data, list):
         return data
     if isinstance(data, dict):
@@ -71,18 +73,18 @@ def _rows(data: Any) -> List[Dict[str, Any]]:
 
 
 async def _await_snapshot(  # pragma: no cover - network
-    session: "aiohttp.ClientSession",
+    session: aiohttp.ClientSession,
     snapshot_id: str,
     *,
     base_url: str,
     poll_timeout_s: float,
     poll_interval_s: float,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Async fallback: poll a snapshot to completion, then download it."""
     loop = asyncio.get_event_loop()
     deadline = loop.time() + poll_timeout_s
     while loop.time() < deadline:
-        async with session.get(f"{base_url}/progress/{snapshot_id}", timeout=30) as resp:
+        async with session.get(f"{base_url}/progress/{snapshot_id}", timeout=_POLL_TIMEOUT) as resp:
             status = (await resp.json()).get("status") if resp.status == 200 else None
         if status == "ready":
             break
@@ -92,23 +94,31 @@ async def _await_snapshot(  # pragma: no cover - network
     else:
         return []
     async with session.get(
-        f"{base_url}/snapshot/{snapshot_id}", params={"format": "json"}, timeout=60
+        f"{base_url}/snapshot/{snapshot_id}",
+        params={"format": "json"},
+        timeout=_SNAPSHOT_TIMEOUT,
     ) as resp:
         if resp.status != 200:
             return []
         return _rows(await resp.json(content_type=None))
 
 
-async def collect(*, token: str, dataset_id: str, inputs: List[Dict[str, Any]],
-                  poll_timeout_s: float = 90.0, base_url: str = API_BASE,
-                  poll_interval_s: float = 3.0) -> List[Dict[str, Any]]:  # pragma: no cover - network
+async def collect(
+    *,
+    token: str,
+    dataset_id: str,
+    inputs: list[dict[str, Any]],
+    poll_timeout_s: float = 90.0,
+    base_url: str = API_BASE,
+    poll_interval_s: float = 3.0,
+) -> list[dict[str, Any]]:  # pragma: no cover - network
     """Scrape ``inputs`` live and return the records (or ``[]`` on any failure).
 
     Tries the synchronous real-time endpoint first (best for our <=20 handles /
     subreddits); if Bright Data converts the job to async (HTTP 202) we poll the
     returned snapshot instead.
     """
-    if aiohttp is None or not (token and dataset_id and inputs):
+    if not (token and dataset_id and inputs):
         return []
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     try:
@@ -116,19 +126,25 @@ async def collect(*, token: str, dataset_id: str, inputs: List[Dict[str, Any]],
             async with session.post(
                 f"{base_url}/scrape",
                 params={"dataset_id": dataset_id, "format": "json", "include_errors": "true"},
-                json={"input": list(inputs)}, timeout=90,
+                json={"input": list(inputs)},
+                timeout=_SCRAPE_TIMEOUT,
             ) as resp:
                 if resp.status == 200:
                     return _rows(await resp.json(content_type=None))  # fresh data, this request
                 if resp.status != 202:
                     return []
                 try:
-                    snapshot_id: Optional[str] = (await resp.json()).get("snapshot_id")
+                    snapshot_id: str | None = (await resp.json()).get("snapshot_id")
                 except Exception:
                     snapshot_id = None
             if not snapshot_id:
                 return []
-            return await _await_snapshot(session, snapshot_id, base_url=base_url,
-                                         poll_timeout_s=poll_timeout_s, poll_interval_s=poll_interval_s)
+            return await _await_snapshot(
+                session,
+                snapshot_id,
+                base_url=base_url,
+                poll_timeout_s=poll_timeout_s,
+                poll_interval_s=poll_interval_s,
+            )
     except Exception:
         return []

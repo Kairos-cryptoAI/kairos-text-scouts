@@ -6,26 +6,56 @@ exposing the same ``select`` interface, so a real transformer can be dropped in
 later without touching the rest of the layer. Social items get a small bonus
 proportional to engagement (likes/upvotes) so loud, high-signal posts survive.
 """
+
 from __future__ import annotations
 
-from typing import List, Sequence
+from collections.abc import Sequence
 
 from .models import NewsItem
 
 RELEVANCE_TERMS = {
-    "bitcoin": 3, "btc": 3, "ethereum": 2, "eth": 2, "crypto": 2, "sec": 3,
-    "etf": 3, "fed": 3, "cpi": 3, "inflation": 2, "rate": 2, "hack": 3,
-    "liquidation": 2, "regulation": 2, "approval": 2, "lawsuit": 2, "halving": 2,
+    "bitcoin": 3,
+    "btc": 3,
+    "ethereum": 2,
+    "eth": 2,
+    "crypto": 2,
+    "sec": 3,
+    "etf": 3,
+    "fed": 3,
+    "cpi": 3,
+    "inflation": 2,
+    "rate": 2,
+    "hack": 3,
+    "liquidation": 2,
+    "regulation": 2,
+    "approval": 2,
+    "lawsuit": 2,
+    "halving": 2,
 }
 IMPACT_TERMS = {
-    "surge": 2, "soar": 2, "rally": 2, "plunge": 2, "crash": 3, "ban": 3,
-    "approve": 2, "reject": 2, "breach": 3, "record": 1, "warning": 2,
+    "surge": 2,
+    "soar": 2,
+    "rally": 2,
+    "plunge": 2,
+    "crash": 3,
+    "ban": 3,
+    "approve": 2,
+    "reject": 2,
+    "breach": 3,
+    "record": 1,
+    "warning": 2,
 }
 
 
 class LocalRelevanceFilter:
-    def __init__(self, threshold: float = 3.0, top_k: int = 5, *,
-                 engagement_scale: float = 500.0, engagement_cap: float = 2.0) -> None:
+    def __init__(
+        self,
+        threshold: float = 3.0,
+        top_k: int = 5,
+        *,
+        engagement_scale: float = 500.0,
+        engagement_cap: float = 2.0,
+    ) -> None:
         self.threshold = threshold
         self.top_k = top_k
         self.engagement_scale = engagement_scale
@@ -42,7 +72,7 @@ class LocalRelevanceFilter:
         s += sum(w for term, w in IMPACT_TERMS.items() if term in text)
         return float(s) + self._engagement_bonus(item)
 
-    def select(self, items: Sequence[NewsItem]) -> List[NewsItem]:
+    def select(self, items: Sequence[NewsItem]) -> list[NewsItem]:
         scored = [(self.score(it), it) for it in items]
         keep = [(sc, it) for sc, it in scored if sc >= self.threshold]
         keep.sort(key=lambda x: x[0], reverse=True)

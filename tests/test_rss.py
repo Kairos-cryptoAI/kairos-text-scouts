@@ -1,4 +1,5 @@
 """RSS parser correctness and hostile-XML regression tests."""
+
 from kairos_text.sources.rss import RSSSource
 
 

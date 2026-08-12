@@ -7,6 +7,7 @@ non-thinking) to turn the few relevant items into structured ``SentimentSignal``
 The expensive model only ever sees pre-filtered text; a local fallback keeps the
 layer alive if the model is down.
 """
+
 from __future__ import annotations
 
 __version__ = "0.1.0"

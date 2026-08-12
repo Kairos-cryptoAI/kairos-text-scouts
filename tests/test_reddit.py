@@ -1,12 +1,27 @@
 from kairos_text.sources.reddit import RedditSource
 
-LISTING = {"kind": "Listing", "data": {"children": [
-    {"kind": "t3", "data": {
-        "title": "ETF inflows hit a record", "selftext": "big day for spot ETFs",
-        "subreddit": "CryptoCurrency", "score": 4200, "created_utc": 1718800000.0,
-        "permalink": "/r/CryptoCurrency/comments/abc/etf_inflows/"}},
-    {"kind": "t3", "data": {"title": "", "subreddit": "Bitcoin", "score": 5}},  # empty title -> skipped
-]}}
+LISTING = {
+    "kind": "Listing",
+    "data": {
+        "children": [
+            {
+                "kind": "t3",
+                "data": {
+                    "title": "ETF inflows hit a record",
+                    "selftext": "big day for spot ETFs",
+                    "subreddit": "CryptoCurrency",
+                    "score": 4200,
+                    "created_utc": 1718800000.0,
+                    "permalink": "/r/CryptoCurrency/comments/abc/etf_inflows/",
+                },
+            },
+            {
+                "kind": "t3",
+                "data": {"title": "", "subreddit": "Bitcoin", "score": 5},
+            },  # empty title -> skipped
+        ]
+    },
+}
 
 
 def test_parse_listing_maps_posts_and_skips_empty_titles():
