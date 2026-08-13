@@ -3,14 +3,16 @@ import json
 from types import SimpleNamespace
 
 from kairos_core.enums import ImpactDirection
+from kairos_llm import LLMWorkload
 
 from kairos_text.models import NewsItem
 from kairos_text.sentiment import SentimentExtractor
 
 
 class FakeGateway:
-    async def complete(self, *, system, user, effort, schema=None):
+    async def complete(self, *, system, user, workload, schema=None):
         self.user = json.loads(user)
+        self.workload = workload
         self.schema = schema
         return SimpleNamespace(
             parsed=schema.model_validate(
@@ -57,6 +59,7 @@ def test_extracts_strict_output_and_preserves_provenance():
     assert sigs[0].topic == "SEC ETF"
     assert sigs[0].impact is ImpactDirection.BULLISH
     assert sigs[0].sources == ["https://example.test/etf"]
+    assert gateway.workload is LLMWorkload.TEXT_SCOUTS
     assert gateway.schema is not None
     assert gateway.user["items"][0]["body"] == "The spot fund was approved."
 
@@ -67,7 +70,8 @@ def test_empty_batch_returns_nothing():
 
 
 class FailingGateway:
-    async def complete(self, *, system, user, effort, schema=None):
+    async def complete(self, *, system, user, workload, schema=None):
+        assert workload is LLMWorkload.TEXT_SCOUTS
         raise RuntimeError("deepseek-v4-flash 503")
 
 

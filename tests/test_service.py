@@ -3,6 +3,8 @@
 import asyncio
 from types import SimpleNamespace
 
+from kairos_llm import LLMWorkload
+
 from kairos_text.config import TextSettings
 from kairos_text.models import NewsItem
 from kairos_text.service import TextScoutsService
@@ -25,7 +27,8 @@ class _StubSource:
 
 
 class _FakeGateway:
-    async def complete(self, *, system, user, effort, schema=None):
+    async def complete(self, *, system, user, workload, schema=None):
+        assert workload is LLMWorkload.TEXT_SCOUTS
         return SimpleNamespace(
             parsed=schema.model_validate(
                 {

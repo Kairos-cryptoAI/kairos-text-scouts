@@ -2,13 +2,14 @@
 
 **Layer 1B — Text Scouts.** A universal **event aggregator** over *official* APIs/feeds
 (no self-hosted scrapers, no proxies, no 403/captcha juggling). It normalizes and
-deduplicates events, drops the noise with a cheap **local filter**, then asks an LLM
-(**low** reasoning effort → DeepSeek-V4-Flash, non-thinking) to turn the few relevant items
-into a structured `SentimentSignal`. The expensive model only ever sees pre-filtered text.
+deduplicates events, drops the noise with a cheap **local filter**, then submits the
+few relevant items through the explicit `TEXT_SCOUTS` LLM workload. Provider/model
+selection belongs to `kairos-llm`; the workload currently maps to the low-cost,
+non-thinking sentiment route. The model only ever sees pre-filtered text.
 
 ## Pipeline
 ```
-sources ──▶ normalize ──▶ dedup ──▶ relevance (+top-K) ──▶ LLM (effort=low) ──▶ SentimentSignal
+sources ──▶ normalize ──▶ dedup ──▶ relevance (+top-K) ──▶ LLM (TEXT_SCOUTS) ──▶ SentimentSignal
 ```
 Example output (matches the spec): `{"topic": "SEC ETF", "sentiment": 0.85, "impact": "bullish"}`.
 

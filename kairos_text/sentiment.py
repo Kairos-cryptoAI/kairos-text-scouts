@@ -1,9 +1,9 @@
 """Turn a batch of relevant items into SentimentSignal messages via the LLM gateway.
 
-The LLM call runs at ``ReasoningEffort.LOW``, which kairos-llm routes to
-DeepSeek-V4-Flash in non-thinking mode. If that model is unavailable the extractor
-degrades to a deterministic local fallback (see :mod:`kairos_text.local`) so the
-Router keeps receiving a coarse text bias instead of going blind.
+The LLM call uses the explicit ``TEXT_SCOUTS`` workload. ``kairos-llm`` owns its
+provider/model/reasoning route. If that route is unavailable the extractor degrades
+to a deterministic local fallback (see :mod:`kairos_text.local`) so the Router keeps
+receiving a coarse text bias instead of going blind.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import json
 from collections.abc import Sequence
 
 from kairos_core.contracts import SentimentSignal
-from kairos_core.enums import ReasoningEffort
+from kairos_llm import LLMWorkload
 
 from .local import local_sentiment
 from .models import NewsItem
@@ -51,7 +51,7 @@ class SentimentExtractor:
             res = await self.gateway.complete(
                 system=SENTIMENT_SYSTEM,
                 user=self._format_batch(items),
-                effort=ReasoningEffort.LOW,
+                workload=LLMWorkload.TEXT_SCOUTS,
                 schema=SentimentBatch,
             )
             batch = (

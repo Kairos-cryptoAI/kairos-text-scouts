@@ -6,7 +6,7 @@ Pipeline::
         -> normalize  (clean, bound, drop empties)
         -> dedup      (collapse repeats across a rolling window)
         -> relevance  (cheap keyword/impact filter + top-K)
-        -> sentiment  (DeepSeek-V4-Flash, non-thinking; local fallback)
+        -> sentiment  (TEXT_SCOUTS workload; local fallback)
         -> publish    kairos.sentiment.signal
 
 Every source is an *official* API/feed (no proxies or self-hosted scrapers), and
