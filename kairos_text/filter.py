@@ -9,8 +9,11 @@ proportional to engagement (likes/upvotes) so loud, high-signal posts survive.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
+from datetime import UTC
 
+from .dedup import dedup_key
 from .models import NewsItem
 
 RELEVANCE_TERMS = {
@@ -45,6 +48,7 @@ IMPACT_TERMS = {
     "record": 1,
     "warning": 2,
 }
+_TOKEN = re.compile(r"[a-z0-9]+")
 
 
 class LocalRelevanceFilter:
@@ -67,13 +71,24 @@ class LocalRelevanceFilter:
         return min(self.engagement_cap, item.engagement / self.engagement_scale)
 
     def score(self, item: NewsItem) -> float:
-        text = item.text.lower()
-        s = sum(w for term, w in RELEVANCE_TERMS.items() if term in text)
-        s += sum(w for term, w in IMPACT_TERMS.items() if term in text)
+        tokens = set(_TOKEN.findall(item.text.lower()))
+        s = sum(w for term, w in RELEVANCE_TERMS.items() if term in tokens)
+        s += sum(w for term, w in IMPACT_TERMS.items() if term in tokens)
         return float(s) + self._engagement_bonus(item)
 
     def select(self, items: Sequence[NewsItem]) -> list[NewsItem]:
         scored = [(self.score(it), it) for it in items]
         keep = [(sc, it) for sc, it in scored if sc >= self.threshold]
-        keep.sort(key=lambda x: x[0], reverse=True)
+        keep.sort(
+            key=lambda pair: (
+                -pair[0],
+                -(
+                    pair[1].published_at.replace(tzinfo=UTC)
+                    if pair[1].published_at.tzinfo is None
+                    else pair[1].published_at
+                ).timestamp(),
+                dedup_key(pair[1]),
+                pair[1].source.casefold(),
+            )
+        )
         return [it for _, it in keep[: self.top_k]]

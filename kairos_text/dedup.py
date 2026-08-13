@@ -11,8 +11,9 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Callable, Iterable
+from dataclasses import replace
 
-from .models import NewsItem
+from .models import NewsItem, canonical_url
 
 _NON = re.compile(r"[^a-z0-9 ]+")
 _WS = re.compile(r"\s+")
@@ -23,10 +24,31 @@ def normalize_title(title: str) -> str:
 
 
 def dedup_key(item: NewsItem) -> str:
-    url = (item.url or "").split("?")[0].rstrip("/").lower()
+    url = canonical_url(item.url)
     if url:
         return f"u:{url}"
     return f"t:{normalize_title(item.title)}"
+
+
+def _quality_key(item: NewsItem) -> tuple[bool, int, int, float, float, str, str, str, str]:
+    """Prefer exact timestamps and richer records, with deterministic ties."""
+    return (
+        not item.timestamp_is_estimated,
+        len(item.body),
+        len(item.title),
+        item.engagement,
+        item.published_at.timestamp(),
+        item.source.casefold(),
+        item.source_kind.casefold(),
+        item.title.casefold(),
+        item.body.casefold(),
+    )
+
+
+def _merge(left: NewsItem, right: NewsItem) -> NewsItem:
+    winner = max((left, right), key=_quality_key)
+    provenance = tuple(sorted(set(left.provenance_refs) | set(right.provenance_refs), key=str.casefold))
+    return replace(winner, provenance=provenance)
 
 
 class EventDeduplicator:
@@ -37,20 +59,31 @@ class EventDeduplicator:
 
     def _evict(self, now: float) -> None:
         cutoff = now - self.window_s
-        for key in [k for k, seen_at in self._seen.items() if seen_at < cutoff]:
+        for key in [k for k, seen_at in self._seen.items() if seen_at <= cutoff]:
             del self._seen[key]
 
-    def filter_new(self, items: Iterable[NewsItem]) -> list[NewsItem]:
-        now = self._clock()
-        self._evict(now)
-        fresh: list[NewsItem] = []
-        batch_keys: set[str] = set()
+    def collapse_batch(self, items: Iterable[NewsItem]) -> list[NewsItem]:
+        """Merge duplicates without mutating rolling-window state."""
+        batch: dict[str, NewsItem] = {}
         for item in items:
             key = dedup_key(item)
-            if key in self._seen or key in batch_keys:
-                continue
-            batch_keys.add(key)
-            fresh.append(item)
-        for key in batch_keys:
-            self._seen[key] = now
+            batch[key] = _merge(batch[key], item) if key in batch else item
+        return [batch[key] for key in sorted(batch)]
+
+    def filter_unseen(self, items: Iterable[NewsItem]) -> list[NewsItem]:
+        """Return rolling-window misses without consuming them."""
+        now = self._clock()
+        self._evict(now)
+        return [item for item in self.collapse_batch(items) if dedup_key(item) not in self._seen]
+
+    def remember(self, items: Iterable[NewsItem]) -> None:
+        """Consume only items that actually advanced through the pipeline."""
+        now = self._clock()
+        self._evict(now)
+        for item in items:
+            self._seen[dedup_key(item)] = now
+
+    def filter_new(self, items: Iterable[NewsItem]) -> list[NewsItem]:
+        fresh = self.filter_unseen(items)
+        self.remember(fresh)
         return fresh

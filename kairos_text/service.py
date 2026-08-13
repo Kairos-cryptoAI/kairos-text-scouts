@@ -16,6 +16,8 @@ each source failure is isolated so one flaky provider never blinds the layer.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from datetime import datetime
 
 from kairos_core.bus import build_bus
 from kairos_core.contracts import LLMHealthEvent
@@ -25,6 +27,7 @@ from kairos_core.topics import Topics
 from .config import TextSettings
 from .dedup import EventDeduplicator
 from .filter import LocalRelevanceFilter
+from .freshness import EventFreshnessFilter
 from .models import NewsItem
 from .normalize import EventNormalizer
 from .sentiment import SentimentExtractor
@@ -35,12 +38,23 @@ log = get_logger("text-scouts")
 
 class TextScoutsService:
     def __init__(
-        self, settings: TextSettings | None = None, *, gateway=None, sources: list[EventSource] | None = None
+        self,
+        settings: TextSettings | None = None,
+        *,
+        gateway=None,
+        sources: list[EventSource] | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.settings = settings or TextSettings()
         self.bus = build_bus(self.settings)
         self.normalizer = EventNormalizer()
         self.dedup = EventDeduplicator(self.settings.dedup_window_s)
+        self.freshness = EventFreshnessFilter(
+            self.settings.max_event_age_s,
+            self.settings.max_future_skew_s,
+            allow_estimated_timestamps=self.settings.allow_estimated_timestamps,
+            **({"clock": clock} if clock is not None else {}),
+        )
         self.filter = LocalRelevanceFilter(self.settings.relevance_threshold, self.settings.top_k)
         self.sources = sources if sources is not None else self._build_sources()
         if gateway is None:
@@ -98,14 +112,26 @@ class TextScoutsService:
     async def poll_once(self) -> int:
         """Run the pipeline once; returns the number of SentimentSignals published."""
         raw = await self._gather()
-        fresh = self.dedup.filter_new(self.normalizer.normalize(raw))
-        relevant = self.filter.select(fresh)
-        log.info("text.filtered", fetched=len(raw), fresh=len(fresh), kept=len(relevant))
+        timely = self.freshness.select(self.normalizer.normalize(raw))
+        candidates = self.dedup.collapse_batch(timely)
+        unseen = self.dedup.filter_unseen(candidates)
+        relevant = self.filter.select(unseen)
+        log.info(
+            "text.filtered",
+            fetched=len(raw),
+            timely=len(timely),
+            unique=len(candidates),
+            kept=len(relevant),
+        )
         published = 0
-        for sig in await self.extractor.extract(relevant):
+        signals = await self.extractor.extract(relevant)
+        published_refs: set[str] = set()
+        for sig in signals:
             await self.bus.publish(Topics.SENTIMENT_SIGNAL, sig)
             log.info("text.signal", topic=sig.topic, sentiment=sig.sentiment, impact=sig.impact.value)
+            published_refs.update(sig.sources)
             published += 1
+        self.dedup.remember(item for item in relevant if published_refs.intersection(item.provenance_refs))
         return published
 
     async def _publish_health(self, model: str, provider: str, ok: bool, kind: str, latency_s: float) -> None:

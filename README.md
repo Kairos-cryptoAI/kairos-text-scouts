@@ -5,7 +5,11 @@
 deduplicates events, drops the noise with a cheap **local filter**, then submits the
 few relevant items through the explicit `TEXT_SCOUTS` LLM workload. Provider/model
 selection belongs to `kairos-llm`; the workload currently maps to the low-cost,
-non-thinking sentiment route. The model only ever sees pre-filtered text.
+non-thinking sentiment route. The model only ever sees pre-filtered text. Items
+without a trustworthy publication time, older than 30 minutes, or more than 5
+seconds in the future are rejected before deduplication. The same five-second
+ingestion skew bound is used by Router; future evidence is still never scored
+against an earlier market snapshot.
 
 ## Pipeline
 ```
@@ -29,12 +33,16 @@ Each source is isolated: one provider failing (e.g. GDELT rate-limiting) never b
 layer. Reuters/Bloomberg no longer publish public RSS, so GDELT covers them. A real
 transformer (BERT/FinBERT) can replace `LocalRelevanceFilter` behind its `select()` interface.
 If DeepSeek-Flash is down the layer degrades to a deterministic local keyword sentiment.
+The degraded path emits only attributable directional evidence; neutral,
+contradictory, stale, or provenance-free items are an abstention (no signal).
 
 ## Configuration (env, `KAIROS_` prefix)
 ```bash
 # News (free, on by default)
 KAIROS_GDELT_QUERY='(bitcoin OR btc OR ethereum OR eth OR crypto OR etf OR sec OR cpi) sourcelang:english'
 KAIROS_GDELT_TIMESPAN=15min
+KAIROS_MAX_EVENT_AGE_S=1800
+KAIROS_MAX_FUTURE_SKEW_S=5
 # X / Twitter (optional — Bright Data Web Scraper API)
 KAIROS_BRIGHTDATA_API_TOKEN=...
 KAIROS_BRIGHTDATA_X_DATASET_ID=...
@@ -58,7 +66,13 @@ uv run --locked python -m kairos_text
 Emits `kairos.sentiment.signal`. The LLM call goes through
 [`kairos-llm`](https://github.com/Kairos-cryptoAI/kairos-llm).
 Every emitted signal carries the URLs or source handles that support it; the
-strict output schema rejects invented item references.
+strict output schema rejects invented item references. `sources` is canonical,
+unique, and lexicographically ordered. LLM item IDs are batch-local 1-based
+references and never leave this service. A single-source LLM confidence is capped
+at `0.65`; low-confidence, neutral, directionally inconsistent, or unattributed
+results are abstentions and are not published. The bus `message_id` is deterministic
+for source/topic/direction/provenance plus evidence time, and `produced_at` is the newest backing
+event time, so a retry after partial publication is an exact downstream duplicate.
 
 ---
 Part of the [Kairos](https://github.com/Kairos-cryptoAI/kairos) system. MIT licensed.

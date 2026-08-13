@@ -25,12 +25,12 @@ _UA = "kairos-text-scouts/0.1 (+https://github.com/Kairos-cryptoAI)"
 _TIMEOUT = aiohttp.ClientTimeout(total=20)
 
 
-def _parse_seendate(value: str) -> datetime:
+def _parse_seendate(value: str) -> datetime | None:
     """GDELT timestamps look like ``20260619T141500Z``."""
     try:
         return datetime.strptime(value, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
     except (ValueError, TypeError):
-        return datetime.now(UTC)
+        return None
 
 
 class GDELTSource:
@@ -63,13 +63,17 @@ class GDELTSource:
             title = (art.get("title") or "").strip()
             if not title:
                 continue
+            published_at = _parse_seendate(art.get("seendate", ""))
+            if published_at is None:
+                continue
             items.append(
                 NewsItem(
                     title=title,
                     url=(art.get("url") or "").strip(),
                     source=(art.get("domain") or "gdelt").strip(),
                     source_kind="gdelt",
-                    published_at=_parse_seendate(art.get("seendate", "")),
+                    published_at=published_at,
+                    timestamp_is_estimated=False,
                 )
             )
         return items

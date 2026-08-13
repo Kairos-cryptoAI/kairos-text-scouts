@@ -19,6 +19,11 @@ def test_x_parse_maps_text_account_and_engagement():
     assert out[0].source == "elonmusk"
     assert out[0].engagement == 1200.0  # likes + reposts
     assert out[0].published_at.year == 2026
+    assert out[0].timestamp_is_estimated is False
+
+
+def test_x_parse_skips_record_without_reliable_publication_time():
+    assert BrightDataXSource.parse([{"text": "BTC rally", "url": "https://x.test/1"}]) == []
 
 
 def test_x_enabled_only_with_token_dataset_and_accounts():

@@ -9,6 +9,8 @@ of fields we need; swap in ``feedparser`` behind the same ``fetch`` for producti
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 
 import aiohttp
 from defusedxml import ElementTree as ET
@@ -21,6 +23,14 @@ _TAG = re.compile(r"<[^>]+>")
 _UA = "kairos-text-scouts/0.1 (+https://github.com/Kairos-cryptoAI)"
 _TIMEOUT = aiohttp.ClientTimeout(total=10)
 log = get_logger("text-scouts.rss")
+
+
+def _parse_date(value: str) -> datetime | None:
+    try:
+        parsed = parsedate_to_datetime(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
 
 
 class RSSSource:
@@ -45,8 +55,19 @@ class RSSSource:
             title = (item.findtext("title") or "").strip()
             desc = _TAG.sub("", item.findtext("description") or "").strip()
             link = (item.findtext("link") or "").strip()
-            if title:
-                items.append(NewsItem(title=title, body=desc, url=link, source=source, source_kind="rss"))
+            published_at = _parse_date(item.findtext("pubDate") or "")
+            if title and published_at is not None:
+                items.append(
+                    NewsItem(
+                        title=title,
+                        body=desc,
+                        url=link,
+                        source=source,
+                        source_kind="rss",
+                        published_at=published_at,
+                        timestamp_is_estimated=False,
+                    )
+                )
         return items
 
     async def fetch(self) -> list[NewsItem]:  # pragma: no cover - network

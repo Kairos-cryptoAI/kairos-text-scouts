@@ -8,12 +8,14 @@ a text bias instead of going blind.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 
 from kairos_core.contracts import SentimentSignal
 from kairos_core.enums import ImpactDirection
 
 from .models import NewsItem
+from .signals import build_signal
 
 BULLISH_TERMS = {
     "surge",
@@ -44,22 +46,38 @@ BEARISH_TERMS = {
     "exploit",
     "default",
 }
+_TOKEN = re.compile(r"[a-z0-9]+")
+
+
+def _directional_hits(text: str) -> tuple[int, int]:
+    tokens = set(_TOKEN.findall(text.lower()))
+    return (
+        sum(1 for word in BULLISH_TERMS if word in tokens),
+        sum(1 for word in BEARISH_TERMS if word in tokens),
+    )
 
 
 def score_text(text: str) -> float:
     """Net keyword sentiment in [-1, 1]."""
-    t = text.lower()
-    pos = sum(1 for w in BULLISH_TERMS if w in t)
-    neg = sum(1 for w in BEARISH_TERMS if w in t)
+    pos, neg = _directional_hits(text)
     if pos == neg:
         return 0.0
     return max(-1.0, min(1.0, (pos - neg) / float(pos + neg)))
 
 
 def local_sentiment(items: Sequence[NewsItem], *, source: str = "text-scouts:local") -> list[SentimentSignal]:
+    """Emit only directional, attributable evidence in degraded mode.
+
+    Neutral or contradictory keyword matches are abstentions. Publishing a neutral
+    placeholder would be indistinguishable downstream from actual neutral evidence.
+    """
     signals: list[SentimentSignal] = []
     for it in items:
+        refs = list(it.provenance_refs)
+        positive_hits, negative_hits = _directional_hits(it.text)
         s = score_text(it.text)
+        if s == 0.0 or (positive_hits and negative_hits) or not refs:
+            continue
         impact = (
             ImpactDirection.BULLISH
             if s > 0
@@ -68,14 +86,23 @@ def local_sentiment(items: Sequence[NewsItem], *, source: str = "text-scouts:loc
             else ImpactDirection.NEUTRAL
         )
         signals.append(
-            SentimentSignal(
+            build_signal(
                 source=source,
                 topic=(it.title[:48] or "news"),
                 sentiment=s,
                 impact=impact,
-                confidence=0.2,  # degraded mode: deliberately low confidence
-                sources=[it.url or it.source] if it.url or it.source else [],
+                confidence=min(0.25, 0.1 + 0.05 * (positive_hits + negative_hits)),
+                sources=refs,
                 summary="local keyword fallback (Flash unavailable)",
+                evidence=[it],
             )
         )
+    signals.sort(
+        key=lambda signal: (
+            signal.topic.casefold(),
+            tuple(ref.casefold() for ref in signal.sources),
+            signal.impact.value,
+            signal.sentiment,
+        )
+    )
     return signals

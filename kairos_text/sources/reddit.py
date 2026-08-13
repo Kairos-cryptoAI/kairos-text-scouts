@@ -26,11 +26,11 @@ OAUTH_BASE = "https://oauth.reddit.com"
 _TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 
-def _epoch_to_dt(value: Any) -> datetime:
+def _epoch_to_dt(value: Any) -> datetime | None:
     try:
         return datetime.fromtimestamp(float(value), tz=UTC)
     except (TypeError, ValueError, OverflowError, OSError):
-        return datetime.now(UTC)
+        return None
 
 
 class RedditSource:
@@ -72,6 +72,9 @@ class RedditSource:
             title = (data.get("title") or "").strip()
             if not title:
                 continue
+            published_at = _epoch_to_dt(data.get("created_utc"))
+            if published_at is None:
+                continue
             permalink = data.get("permalink") or ""
             url = f"https://www.reddit.com{permalink}" if permalink else (data.get("url") or "")
             subreddit = data.get("subreddit") or ""
@@ -83,7 +86,8 @@ class RedditSource:
                     source=f"r/{subreddit}" if subreddit else "reddit",
                     source_kind="reddit",
                     engagement=float(data.get("score") or 0),
-                    published_at=_epoch_to_dt(data.get("created_utc")),
+                    published_at=published_at,
+                    timestamp_is_estimated=False,
                 )
             )
         return items

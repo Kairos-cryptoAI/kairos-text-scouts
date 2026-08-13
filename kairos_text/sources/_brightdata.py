@@ -49,19 +49,19 @@ def num(record: dict[str, Any], keys: Sequence[str]) -> float:
     return total
 
 
-def to_dt(value: Any) -> datetime:
+def to_dt(value: Any) -> datetime | None:
     if value in (None, ""):
-        return datetime.now(UTC)
+        return None
     if isinstance(value, (int, float)):
         try:
             return datetime.fromtimestamp(float(value), tz=UTC)
         except (OverflowError, OSError, ValueError):  # pragma: no cover - defensive
-            return datetime.now(UTC)
+            return None
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
     except ValueError:
-        return datetime.now(UTC)
+        return None
 
 
 def _rows(data: Any) -> list[dict[str, Any]]:

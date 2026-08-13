@@ -11,6 +11,8 @@ from __future__ import annotations
 import html
 import re
 from collections.abc import Iterable
+from dataclasses import replace
+from datetime import UTC
 
 from .models import NewsItem
 
@@ -35,9 +37,20 @@ class EventNormalizer:
             title = clean(item.title)[: self.max_title]
             if not title:
                 continue
-            item.title = title
-            item.body = clean(item.body)[: self.max_body]
-            item.url = (item.url or "").strip()
-            item.source = (item.source or item.source_kind or "unknown").strip()
-            out.append(item)
+            published_at = item.published_at
+            if published_at.tzinfo is None:
+                published_at = published_at.replace(tzinfo=UTC)
+            else:
+                published_at = published_at.astimezone(UTC)
+            out.append(
+                replace(
+                    item,
+                    title=title,
+                    body=clean(item.body)[: self.max_body],
+                    url=(item.url or "").strip(),
+                    source=(item.source or item.source_kind or "unknown").strip(),
+                    published_at=published_at,
+                    provenance=tuple(ref.strip() for ref in item.provenance if ref.strip()),
+                )
+            )
         return out

@@ -18,6 +18,15 @@ from .local import local_sentiment
 from .models import NewsItem
 from .prompts import SENTIMENT_SYSTEM
 from .schemas import SentimentBatch
+from .signals import build_signal
+
+_MIN_MODEL_CONFIDENCE = 0.35
+_MIN_DIRECTIONAL_SENTIMENT = 0.1
+
+
+def _confidence_cap(evidence_count: int) -> float:
+    """Calibrate model self-confidence to the amount of independent evidence."""
+    return min(0.9, 0.65 + 0.1 * (evidence_count - 1))
 
 
 class SentimentExtractor:
@@ -66,21 +75,39 @@ class SentimentExtractor:
         indexed_items = {index: item for index, item in enumerate(items, start=1)}
         signals: list[SentimentSignal] = []
         for extracted in batch.signals:
-            evidence = [indexed_items[item_id] for item_id in extracted.item_ids if item_id in indexed_items]
-            if not evidence:
+            item_ids = list(dict.fromkeys(extracted.item_ids))
+            if len(item_ids) != len(extracted.item_ids) or any(
+                item_id not in indexed_items for item_id in item_ids
+            ):
                 continue
-            sources = list(
-                dict.fromkeys(item.url or item.source for item in evidence if item.url or item.source)
-            )
+            evidence = [indexed_items[item_id] for item_id in item_ids]
+            sources = sorted({ref for item in evidence for ref in item.provenance_refs}, key=str.casefold)
+            if not sources or extracted.confidence < _MIN_MODEL_CONFIDENCE:
+                continue
+            if (extracted.sentiment > 0 and extracted.impact.value != "bullish") or (
+                extracted.sentiment < 0 and extracted.impact.value != "bearish"
+            ):
+                continue
+            if abs(extracted.sentiment) < _MIN_DIRECTIONAL_SENTIMENT or extracted.impact.value == "neutral":
+                continue
             signals.append(
-                SentimentSignal(
+                build_signal(
                     source=self.source,
                     topic=extracted.topic,
                     sentiment=extracted.sentiment,
                     impact=extracted.impact,
-                    confidence=extracted.confidence,
+                    confidence=min(extracted.confidence, _confidence_cap(len(sources))),
                     sources=sources,
                     summary=extracted.summary,
+                    evidence=evidence,
                 )
             )
+        signals.sort(
+            key=lambda signal: (
+                signal.topic.casefold(),
+                tuple(ref.casefold() for ref in signal.sources),
+                signal.impact.value,
+                signal.sentiment,
+            )
+        )
         return signals

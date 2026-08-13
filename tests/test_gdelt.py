@@ -20,19 +20,19 @@ SAMPLE = {
             "title": "Fed holds rates",
             "seendate": "garbage",
             "domain": "cnbc.com",
-        },  # bad date -> tz-aware fallback
+        },  # bad date -> skipped instead of pretending it is fresh
     ]
 }
 
 
 def test_parse_maps_articles_and_skips_empty_titles():
     items = GDELTSource.parse(SAMPLE)
-    assert len(items) == 2
+    assert len(items) == 1
     assert items[0].source_kind == "gdelt"
     assert items[0].source == "coindesk.com"
     assert items[0].url == "https://coindesk.com/x"
     assert items[0].published_at.year == 2026 and items[0].published_at.month == 6
-    assert items[1].published_at.tzinfo is not None  # bad date still tz-aware
+    assert items[0].timestamp_is_estimated is False
 
 
 def test_parse_handles_empty_or_missing_payload():

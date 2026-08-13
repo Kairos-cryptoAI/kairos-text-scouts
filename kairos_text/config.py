@@ -9,14 +9,18 @@ configured, so the layer runs fine for free out of the box.
 from __future__ import annotations
 
 from kairos_core.config import CoreSettings
+from pydantic import Field
 
 
 class TextSettings(CoreSettings):
     service_name: str = "kairos-text-scouts"
-    poll_interval_s: float = 300.0  # aggregate every 5 minutes (spec)
-    top_k: int = 5  # keep ~5 of the incoming items
-    relevance_threshold: float = 3.0
-    dedup_window_s: float = 21600.0  # 6h rolling window for cross-poll dedup
+    poll_interval_s: float = Field(default=300.0, gt=0)  # aggregate every 5 minutes (spec)
+    top_k: int = Field(default=5, ge=1)  # keep ~5 of the incoming items
+    relevance_threshold: float = Field(default=3.0, ge=0)
+    dedup_window_s: float = Field(default=21600.0, gt=0)  # 6h rolling window for cross-poll dedup
+    max_event_age_s: float = Field(default=1800.0, ge=0)  # accept evidence up to 30 minutes old
+    max_future_skew_s: float = Field(default=5.0, ge=0)  # match downstream ingestion skew bound
+    allow_estimated_timestamps: bool = False
 
     # --- News via GDELT (free, official; aggregates Reuters/Bloomberg/CNBC/...) ---
     enable_gdelt: bool = True

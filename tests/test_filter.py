@@ -19,3 +19,8 @@ def test_drops_noise_keeps_relevant():
 def test_top_k_caps_output():
     items = [NewsItem(title=f"Bitcoin ETF approval news {i}") for i in range(20)]
     assert len(LocalRelevanceFilter(top_k=5).select(items)) == 5
+
+
+def test_keyword_matching_uses_tokens_not_substrings():
+    filter_ = LocalRelevanceFilter(threshold=2.0)
+    assert filter_.score(NewsItem(title="Beth rates a theatre performance")) == 0.0

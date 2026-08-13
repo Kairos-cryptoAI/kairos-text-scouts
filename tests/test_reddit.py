@@ -32,6 +32,7 @@ def test_parse_listing_maps_posts_and_skips_empty_titles():
     assert out[0].engagement == 4200.0
     assert out[0].url == "https://www.reddit.com/r/CryptoCurrency/comments/abc/etf_inflows/"
     assert out[0].published_at.tzinfo is not None and out[0].published_at.year >= 2024
+    assert out[0].timestamp_is_estimated is False
 
 
 def test_parse_listing_handles_empty_payload():

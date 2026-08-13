@@ -54,6 +54,9 @@ class BrightDataXSource:
             if not text:
                 continue
             account = str(first(rec, ["user_posted", "profile_name", "name", "user_name"], "x"))
+            published_at = to_dt(first(rec, ["date_posted", "timestamp", "date"]))
+            if published_at is None:
+                continue
             out.append(
                 NewsItem(
                     title=text[:240],
@@ -62,7 +65,8 @@ class BrightDataXSource:
                     source=account,
                     source_kind="x",
                     engagement=num(rec, ["likes", "reposts", "retweets"]),
-                    published_at=to_dt(first(rec, ["date_posted", "timestamp", "date"])),
+                    published_at=published_at,
+                    timestamp_is_estimated=False,
                 )
             )
         return out

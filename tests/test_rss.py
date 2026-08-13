@@ -6,6 +6,7 @@ from kairos_text.sources.rss import RSSSource
 def test_parse_valid_rss_item():
     xml = """<rss><channel><item><title>BTC rally</title>
     <description><![CDATA[<b>Strong</b> demand]]></description>
+    <pubDate>Thu, 13 Aug 2026 09:00:00 GMT</pubDate>
     <link>https://example.com/btc</link></item></channel></rss>"""
 
     items = RSSSource._parse(xml, "https://example.com/feed")
@@ -13,6 +14,13 @@ def test_parse_valid_rss_item():
     assert len(items) == 1
     assert items[0].title == "BTC rally"
     assert items[0].body == "Strong demand"
+    assert items[0].published_at.year == 2026
+    assert items[0].timestamp_is_estimated is False
+
+
+def test_parse_skips_item_without_reliable_publication_time():
+    xml = "<rss><channel><item><title>BTC rally</title></item></channel></rss>"
+    assert RSSSource._parse(xml, "https://example.com/feed") == []
 
 
 def test_parse_rejects_entity_expansion_payload():
