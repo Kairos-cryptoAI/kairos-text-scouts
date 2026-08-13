@@ -1,4 +1,5 @@
 """Service wiring + end-to-end pipeline on the in-memory bus (no network, no keys)."""
+
 import asyncio
 from types import SimpleNamespace
 
@@ -25,9 +26,22 @@ class _StubSource:
 
 class _FakeGateway:
     async def complete(self, *, system, user, effort, schema=None):
-        return SimpleNamespace(parsed={"signals": [
-            {"topic": "SEC ETF", "sentiment": 0.8, "impact": "bullish",
-             "confidence": 0.9, "summary": "approval"}]})
+        return SimpleNamespace(
+            parsed=schema.model_validate(
+                {
+                    "signals": [
+                        {
+                            "topic": "SEC ETF",
+                            "sentiment": 0.8,
+                            "impact": "bullish",
+                            "confidence": 0.9,
+                            "summary": "approval",
+                            "item_ids": [1],
+                        }
+                    ]
+                }
+            )
+        )
 
 
 class _CancelledSource:
@@ -41,13 +55,14 @@ class _CancelledSource:
 def test_poll_once_aggregates_dedups_filters_and_publishes():
     items = [
         NewsItem(title="SEC approves spot Bitcoin ETF", url="https://a/1", source_kind="gdelt"),
-        NewsItem(title="SEC approves spot Bitcoin ETF", url="https://a/1", source_kind="rss"),   # duplicate
-        NewsItem(title="Local bakery wins a small award", url="https://a/2", source_kind="rss"), # noise
+        NewsItem(title="SEC approves spot Bitcoin ETF", url="https://a/1", source_kind="rss"),  # duplicate
+        NewsItem(title="Local bakery wins a small award", url="https://a/2", source_kind="rss"),  # noise
     ]
-    svc = TextScoutsService(TextSettings(bus_backend="memory"),
-                            gateway=_FakeGateway(), sources=[_StubSource(items)])
+    svc = TextScoutsService(
+        TextSettings(bus_backend="memory"), gateway=_FakeGateway(), sources=[_StubSource(items)]
+    )
     published = asyncio.run(svc.poll_once())
-    assert published == 1   # dup collapsed, noise filtered, one signal emitted
+    assert published == 1  # dup collapsed, noise filtered, one signal emitted
 
 
 def test_gather_propagates_source_cancellation():

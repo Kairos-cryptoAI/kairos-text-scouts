@@ -42,14 +42,22 @@ KAIROS_REDDIT_CLIENT_ID=...
 KAIROS_REDDIT_CLIENT_SECRET=...
 ```
 
-## Run
-```bash
-pip install -e ../kairos-core -e ../kairos-llm && pip install -e ".[dev]"
-make test
-python -m kairos_text
+## Local development
+```powershell
+winget install --id astral-sh.uv --exact
+uv sync --locked
+uv run --locked ruff check kairos_text tests
+uv run --locked ruff format --check kairos_text tests
+uv run --locked mypy kairos_text
+uv run --locked bandit -q -r kairos_text -x tests
+uv run --locked pytest -q --tb=short
+uv build --no-sources
+uv run --locked python -m kairos_text
 ```
 Emits `kairos.sentiment.signal`. The LLM call goes through
 [`kairos-llm`](https://github.com/Kairos-cryptoAI/kairos-llm).
+Every emitted signal carries the URLs or source handles that support it; the
+strict output schema rejects invented item references.
 
 ---
 Part of the [Kairos](https://github.com/Kairos-cryptoAI/kairos) system. MIT licensed.

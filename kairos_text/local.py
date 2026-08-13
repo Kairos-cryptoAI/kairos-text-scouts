@@ -5,19 +5,45 @@ down, Text Scouts drop to *local filtering* — a deterministic keyword scorer t
 still emits coarse, low-confidence SentimentSignals so the Router keeps receiving
 a text bias instead of going blind.
 """
+
 from __future__ import annotations
 
-from typing import List, Sequence
+from collections.abc import Sequence
 
 from kairos_core.contracts import SentimentSignal
 from kairos_core.enums import ImpactDirection
 
 from .models import NewsItem
 
-BULLISH_TERMS = {"surge", "soar", "rally", "approve", "approval", "record",
-                 "adopt", "adoption", "bull", "gain", "inflow", "upgrade"}
-BEARISH_TERMS = {"plunge", "crash", "ban", "reject", "breach", "hack", "lawsuit",
-                 "warning", "outflow", "bear", "selloff", "exploit", "default"}
+BULLISH_TERMS = {
+    "surge",
+    "soar",
+    "rally",
+    "approve",
+    "approval",
+    "record",
+    "adopt",
+    "adoption",
+    "bull",
+    "gain",
+    "inflow",
+    "upgrade",
+}
+BEARISH_TERMS = {
+    "plunge",
+    "crash",
+    "ban",
+    "reject",
+    "breach",
+    "hack",
+    "lawsuit",
+    "warning",
+    "outflow",
+    "bear",
+    "selloff",
+    "exploit",
+    "default",
+}
 
 
 def score_text(text: str) -> float:
@@ -30,18 +56,26 @@ def score_text(text: str) -> float:
     return max(-1.0, min(1.0, (pos - neg) / float(pos + neg)))
 
 
-def local_sentiment(items: Sequence[NewsItem], *, source: str = "text-scouts:local") -> List[SentimentSignal]:
-    signals: List[SentimentSignal] = []
+def local_sentiment(items: Sequence[NewsItem], *, source: str = "text-scouts:local") -> list[SentimentSignal]:
+    signals: list[SentimentSignal] = []
     for it in items:
         s = score_text(it.text)
-        impact = (ImpactDirection.BULLISH if s > 0 else
-                  ImpactDirection.BEARISH if s < 0 else ImpactDirection.NEUTRAL)
-        signals.append(SentimentSignal(
-            source=source,
-            topic=(it.title[:48] or "news"),
-            sentiment=s,
-            impact=impact,
-            confidence=0.2,  # degraded mode: deliberately low confidence
-            summary="local keyword fallback (Flash unavailable)",
-        ))
+        impact = (
+            ImpactDirection.BULLISH
+            if s > 0
+            else ImpactDirection.BEARISH
+            if s < 0
+            else ImpactDirection.NEUTRAL
+        )
+        signals.append(
+            SentimentSignal(
+                source=source,
+                topic=(it.title[:48] or "news"),
+                sentiment=s,
+                impact=impact,
+                confidence=0.2,  # degraded mode: deliberately low confidence
+                sources=[it.url or it.source] if it.url or it.source else [],
+                summary="local keyword fallback (Flash unavailable)",
+            )
+        )
     return signals

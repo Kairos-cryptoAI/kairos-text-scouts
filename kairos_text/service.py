@@ -12,10 +12,10 @@ Pipeline::
 Every source is an *official* API/feed (no proxies or self-hosted scrapers), and
 each source failure is isolated so one flaky provider never blinds the layer.
 """
+
 from __future__ import annotations
 
 import asyncio
-from typing import List
 
 from kairos_core.bus import build_bus
 from kairos_core.contracts import LLMHealthEvent
@@ -34,8 +34,9 @@ log = get_logger("text-scouts")
 
 
 class TextScoutsService:
-    def __init__(self, settings: TextSettings | None = None, *, gateway=None,
-                 sources: List[EventSource] | None = None) -> None:
+    def __init__(
+        self, settings: TextSettings | None = None, *, gateway=None, sources: list[EventSource] | None = None
+    ) -> None:
         self.settings = settings or TextSettings()
         self.bus = build_bus(self.settings)
         self.normalizer = EventNormalizer()
@@ -44,33 +45,46 @@ class TextScoutsService:
         self.sources = sources if sources is not None else self._build_sources()
         if gateway is None:
             from kairos_llm import LLMGateway  # lazy: only needed at runtime
+
             gateway = LLMGateway(on_health=self._publish_health)
         self.extractor = SentimentExtractor(gateway, source=self.settings.service_name)
 
-    def _build_sources(self) -> List[EventSource]:
+    def _build_sources(self) -> list[EventSource]:
         s = self.settings
-        sources: List[EventSource] = []
+        sources: list[EventSource] = []
         if s.enable_gdelt:
-            sources.append(GDELTSource(query=s.gdelt_query, timespan=s.gdelt_timespan,
-                                       max_records=s.gdelt_max_records))
+            sources.append(
+                GDELTSource(query=s.gdelt_query, timespan=s.gdelt_timespan, max_records=s.gdelt_max_records)
+            )
         if s.enable_rss:
             sources.append(RSSSource(s.rss_feeds))
         if s.enable_x:
-            sources.append(BrightDataXSource(token=s.brightdata_api_token,
-                                             dataset_id=s.brightdata_x_dataset_id,
-                                             accounts=s.x_accounts, num_posts=s.x_num_posts,
-                                             poll_timeout_s=s.brightdata_poll_timeout_s))
+            sources.append(
+                BrightDataXSource(
+                    token=s.brightdata_api_token,
+                    dataset_id=s.brightdata_x_dataset_id,
+                    accounts=s.x_accounts,
+                    num_posts=s.x_num_posts,
+                    poll_timeout_s=s.brightdata_poll_timeout_s,
+                )
+            )
         if s.enable_reddit:
-            sources.append(RedditSource(client_id=s.reddit_client_id,
-                                        client_secret=s.reddit_client_secret,
-                                        user_agent=s.reddit_user_agent, subreddits=s.subreddits,
-                                        listing=s.reddit_listing, limit=s.reddit_limit))
+            sources.append(
+                RedditSource(
+                    client_id=s.reddit_client_id,
+                    client_secret=s.reddit_client_secret,
+                    user_agent=s.reddit_user_agent,
+                    subreddits=s.subreddits,
+                    listing=s.reddit_listing,
+                    limit=s.reddit_limit,
+                )
+            )
         return sources
 
-    async def _gather(self) -> List[NewsItem]:
+    async def _gather(self) -> list[NewsItem]:
         active = [src for src in self.sources if src.enabled]
         results = await asyncio.gather(*(src.fetch() for src in active), return_exceptions=True)
-        items: List[NewsItem] = []
+        items: list[NewsItem] = []
         for src, res in zip(active, results, strict=False):
             if isinstance(res, asyncio.CancelledError):
                 # Cancellation is lifecycle control, not a recoverable source error.
@@ -95,13 +109,22 @@ class TextScoutsService:
         return published
 
     async def _publish_health(self, model: str, provider: str, ok: bool, kind: str, latency_s: float) -> None:
-        await self.bus.publish(Topics.LLM_HEALTH, LLMHealthEvent(
-            source=self.settings.service_name, provider=provider, model=model,
-            ok=ok, kind=kind, latency_s=latency_s))
+        await self.bus.publish(
+            Topics.LLM_HEALTH,
+            LLMHealthEvent(
+                source=self.settings.service_name,
+                provider=provider,
+                model=model,
+                ok=ok,
+                kind=kind,
+                latency_s=latency_s,
+            ),
+        )
 
     async def run(self) -> None:  # pragma: no cover - network
-        configure_logging(self.settings.log_level, json_logs=self.settings.log_json,
-                          service=self.settings.service_name)
+        configure_logging(
+            self.settings.log_level, json_logs=self.settings.log_json, service=self.settings.service_name
+        )
         log.info("text.start", sources=[s.name for s in self.sources if s.enabled])
         while True:
             await self.poll_once()

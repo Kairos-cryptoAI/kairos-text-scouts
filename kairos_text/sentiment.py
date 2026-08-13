@@ -5,16 +5,19 @@ DeepSeek-V4-Flash in non-thinking mode. If that model is unavailable the extract
 degrades to a deterministic local fallback (see :mod:`kairos_text.local`) so the
 Router keeps receiving a coarse text bias instead of going blind.
 """
+
 from __future__ import annotations
 
-from typing import List, Sequence
+import json
+from collections.abc import Sequence
 
 from kairos_core.contracts import SentimentSignal
-from kairos_core.enums import ImpactDirection, ReasoningEffort
+from kairos_core.enums import ReasoningEffort
 
 from .local import local_sentiment
 from .models import NewsItem
 from .prompts import SENTIMENT_SYSTEM
+from .schemas import SentimentBatch
 
 
 class SentimentExtractor:
@@ -25,31 +28,59 @@ class SentimentExtractor:
         self.source = source
 
     def _format_batch(self, items: Sequence[NewsItem]) -> str:
-        lines = [f"{i+1}. [{it.source}] {it.title}" for i, it in enumerate(items)]
-        return "\n".join(lines)
+        payload = {
+            "items": [
+                {
+                    "id": index,
+                    "source": item.source,
+                    "source_kind": item.source_kind,
+                    "title": item.title,
+                    "body": item.body,
+                    "url": item.url,
+                    "published_at": item.published_at.isoformat(),
+                }
+                for index, item in enumerate(items, start=1)
+            ]
+        }
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
-    async def extract(self, items: Sequence[NewsItem]) -> List[SentimentSignal]:
+    async def extract(self, items: Sequence[NewsItem]) -> list[SentimentSignal]:
         if not items:
             return []
         try:
             res = await self.gateway.complete(
-                system=SENTIMENT_SYSTEM, user=self._format_batch(items), effort=ReasoningEffort.LOW
+                system=SENTIMENT_SYSTEM,
+                user=self._format_batch(items),
+                effort=ReasoningEffort.LOW,
+                schema=SentimentBatch,
+            )
+            batch = (
+                res.parsed
+                if isinstance(res.parsed, SentimentBatch)
+                else SentimentBatch.model_validate(res.parsed)
             )
         except Exception:
             # DeepSeek-V4-Flash unavailable -> degrade to local filtering mode.
             return local_sentiment(items, source=f"{self.source}:local")
-        data = res.parsed if isinstance(res.parsed, dict) else {}
-        signals: List[SentimentSignal] = []
-        for raw in data.get("signals", []):
-            try:
-                signals.append(SentimentSignal(
-                    source=self.source,
-                    topic=raw["topic"],
-                    sentiment=float(raw["sentiment"]),
-                    impact=ImpactDirection(str(raw.get("impact", "neutral")).lower()),
-                    confidence=float(raw.get("confidence", 0.5)),
-                    summary=raw.get("summary", ""),
-                ))
-            except (KeyError, ValueError):
+
+        indexed_items = {index: item for index, item in enumerate(items, start=1)}
+        signals: list[SentimentSignal] = []
+        for extracted in batch.signals:
+            evidence = [indexed_items[item_id] for item_id in extracted.item_ids if item_id in indexed_items]
+            if not evidence:
                 continue
+            sources = list(
+                dict.fromkeys(item.url or item.source for item in evidence if item.url or item.source)
+            )
+            signals.append(
+                SentimentSignal(
+                    source=self.source,
+                    topic=extracted.topic,
+                    sentiment=extracted.sentiment,
+                    impact=extracted.impact,
+                    confidence=extracted.confidence,
+                    sources=sources,
+                    summary=extracted.summary,
+                )
+            )
         return signals

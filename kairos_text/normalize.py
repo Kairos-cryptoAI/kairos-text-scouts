@@ -5,11 +5,12 @@ ragged whitespace). The normalizer unescapes HTML entities, strips tags, collaps
 whitespace, bounds field length and drops empty-title items, so the downstream
 dedup / relevance / LLM stages see uniform text regardless of provenance.
 """
+
 from __future__ import annotations
 
 import html
 import re
-from typing import Iterable, List
+from collections.abc import Iterable
 
 from .models import NewsItem
 
@@ -28,8 +29,8 @@ class EventNormalizer:
         self.max_title = max_title
         self.max_body = max_body
 
-    def normalize(self, items: Iterable[NewsItem]) -> List[NewsItem]:
-        out: List[NewsItem] = []
+    def normalize(self, items: Iterable[NewsItem]) -> list[NewsItem]:
+        out: list[NewsItem] = []
         for item in items:
             title = clean(item.title)[: self.max_title]
             if not title:
