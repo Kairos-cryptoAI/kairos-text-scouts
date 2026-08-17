@@ -23,6 +23,7 @@ from kairos_core.bus import build_bus
 from kairos_core.contracts import LLMHealthEvent
 from kairos_core.logging import configure_logging, get_logger
 from kairos_core.topics import Topics
+from kairos_persistence import DurableMessageBus
 
 from .config import TextSettings
 from .dedup import EventDeduplicator
@@ -46,7 +47,12 @@ class TextScoutsService:
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.settings = settings or TextSettings()
-        self.bus = build_bus(self.settings)
+        transport = build_bus(self.settings)
+        self.bus = (
+            transport
+            if self.settings.bus_backend == "memory"
+            else DurableMessageBus(transport, service_name=self.settings.service_name)
+        )
         self.normalizer = EventNormalizer()
         self.dedup = EventDeduplicator(self.settings.dedup_window_s)
         self.freshness = EventFreshnessFilter(

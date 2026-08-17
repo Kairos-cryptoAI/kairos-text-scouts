@@ -74,5 +74,12 @@ results are abstentions and are not published. The bus `message_id` is determini
 for source/topic/direction/provenance plus evidence time, and `produced_at` is the newest backing
 event time, so a retry after partial publication is an exact downstream duplicate.
 
+## Runtime delivery durability
+
+The Redis backend uses `kairos-persistence`: publications are committed to a
+PostgreSQL outbox before dispatch. Configure `KAIROS_PERSISTENCE_DATABASE_URL`
+through the deployment secret provider. The in-memory backend intentionally
+bypasses persistence and is limited to local tests.
+
 ---
 Part of the [Kairos](https://github.com/Kairos-cryptoAI/kairos) system. MIT licensed.
