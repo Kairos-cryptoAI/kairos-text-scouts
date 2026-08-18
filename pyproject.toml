@@ -42,6 +42,7 @@ kairos-persistence = { git = "https://github.com/Kairos-cryptoAI/kairos-persiste
 
 [project.scripts]
 kairos-text-scouts = "kairos_text.service:main"
+kairos-feed-qualify = "kairos_text.feed_qualification:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["kairos_text"]

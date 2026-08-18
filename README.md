@@ -36,6 +36,28 @@ If DeepSeek-Flash is down the layer degrades to a deterministic local keyword se
 The degraded path emits only attributable directional evidence; neutral,
 contradictory, stale, or provenance-free items are an abstention (no signal).
 
+## Feed qualification
+
+Run a source-only probe before shadow operation:
+
+```powershell
+uv run --locked kairos-feed-qualify `
+  --samples 3 `
+  --output $env:TEMP\kairos-feed-qualification.json `
+  --overwrite
+```
+
+GDELT and each RSS feed are measured independently. Reddit credentials are read only
+from `--reddit-client-id-file` / `--reddit-client-secret-file`. Bright Data is never
+called merely because a token exists: the paid request additionally requires
+`--brightdata-token-file`, `--brightdata-dataset-id`, and the explicit
+`--allow-metered-brightdata-probe` flag. Evidence contains only counts, freshness and
+latency—never article text, OAuth tokens, or provider secrets. Empty or stale content is
+`BLOCKED` rather than misclassified as a transport failure; malformed attributable
+evidence is `FAIL`. Because the current `EventSource` API does not expose provider quota
+or billing headers, that limitation remains explicit in every report and reports always
+set `live_orders_allowed=false`.
+
 ## Configuration (env, `KAIROS_` prefix)
 ```bash
 # News (free, on by default)
