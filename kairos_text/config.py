@@ -39,7 +39,7 @@ class TextSettings(CoreSettings):
     x_max_results: int = Field(default=10, ge=5, le=100)
     x_max_pages: int = Field(default=3, ge=1, le=10)
     x_timeout_s: float = Field(default=30.0, gt=0)
-    x_monthly_budget_microusd: int = Field(default=10_000_000, ge=0, le=10_000_000)
+    x_monthly_budget_microusd: int = Field(default=9_000_000, ge=0, le=10_000_000)
     x_post_read_unit_cost_microusd: int = Field(default=5_000, ge=5_000)
     x_user_read_unit_cost_microusd: int = Field(default=10_000, ge=10_000)
 

@@ -23,7 +23,7 @@ from kairos_core.bus import build_bus
 from kairos_core.contracts import LLMHealthEvent
 from kairos_core.logging import configure_logging, get_logger
 from kairos_core.topics import Topics
-from kairos_persistence import DurableMessageBus, SourceStateRepository
+from kairos_persistence import DurableLLMUsageBudget, DurableMessageBus, SourceStateRepository
 
 from .config import TextSettings
 from .dedup import EventDeduplicator
@@ -71,9 +71,22 @@ class TextScoutsService:
         self.filter = LocalRelevanceFilter(self.settings.relevance_threshold, self.settings.top_k)
         self.sources = sources if sources is not None else self._build_sources()
         if gateway is None:
-            from kairos_llm import LLMGateway  # lazy: only needed at runtime
+            from kairos_llm import (
+                BudgetedLLMGateway,
+                DenyLLMUsageBudget,
+                LLMGateway,
+                LLMSettings,
+            )
 
-            gateway = LLMGateway(on_health=self._publish_health)
+            budget = (
+                DurableLLMUsageBudget(self.bus)
+                if isinstance(self.bus, DurableMessageBus)
+                else DenyLLMUsageBudget()
+            )
+            gateway = BudgetedLLMGateway(
+                LLMGateway(settings=LLMSettings(max_retries=0), on_health=self._publish_health),
+                budget,
+            )
         self.extractor = SentimentExtractor(gateway, source=self.settings.service_name)
 
     def _build_sources(self) -> list[EventSource]:

@@ -5,7 +5,8 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
-from kairos_llm import LLMWorkload
+from kairos_llm import BudgetedLLMGateway, DenyLLMUsageBudget, LLMWorkload
+from kairos_persistence import DurableLLMUsageBudget
 
 from kairos_text.config import TextSettings
 from kairos_text.models import NewsItem
@@ -14,7 +15,14 @@ from kairos_text.service import TextScoutsService
 
 def test_gateway_health_hook_is_wired():
     svc = TextScoutsService(TextSettings(bus_backend="memory"))
+    assert isinstance(svc.extractor.gateway, BudgetedLLMGateway)
+    assert isinstance(svc.extractor.gateway.budget, DenyLLMUsageBudget)
     assert svc.extractor.gateway._on_health is not None
+
+
+def test_durable_runtime_wires_shared_provider_budget():
+    svc = TextScoutsService(TextSettings(bus_backend="redis"))
+    assert isinstance(svc.extractor.gateway.budget, DurableLLMUsageBudget)
 
 
 def test_x_bearer_token_is_redacted_by_settings_repr():

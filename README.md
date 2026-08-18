@@ -89,14 +89,19 @@ KAIROS_MAX_EVENT_AGE_S=1800
 KAIROS_MAX_FUTURE_SKEW_S=5
 # X / Twitter (optional — official X API; inject token through a secret provider)
 KAIROS_X_BEARER_TOKEN=...
-# $10.000000/month, $0.005/Post and $0.010/User, represented as integer micro-USD
-KAIROS_X_MONTHLY_BUDGET_MICROUSD=10000000
+# $9 runtime allocation under the $10 provider cap; integer micro-USD
+KAIROS_X_MONTHLY_BUDGET_MICROUSD=9000000
 KAIROS_X_POST_READ_UNIT_COST_MICROUSD=5000
 KAIROS_X_USER_READ_UNIT_COST_MICROUSD=10000
 # Reddit (optional — official Reddit API, free; register an app at reddit.com/prefs/apps)
 KAIROS_REDDIT_CLIENT_ID=...
 KAIROS_REDDIT_CLIENT_SECRET=...
 ```
+
+Paid DeepSeek calls are also fail-closed. In the durable runtime, Text Scouts
+uses the shared PostgreSQL `kairos-llm-v1/deepseek` ledger and the `$4.50`
+runtime ceiling before contacting the provider. An in-memory runtime has no
+durable ledger and therefore denies paid calls, falling back locally.
 
 ## Local development
 ```powershell
