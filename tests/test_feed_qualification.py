@@ -1,5 +1,6 @@
 import json
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import pytest
 
@@ -9,6 +10,7 @@ from kairos_text.feed_qualification import (
     FeedStatus,
     _build_feed_specs,
     _read_secret,
+    _usd_to_microusd,
     _write_report,
     qualify_feeds,
 )
@@ -69,6 +71,35 @@ async def test_missing_credentials_make_no_request_and_remain_blocked():
 
 
 @pytest.mark.asyncio
+async def test_metered_feed_passes_with_quota_and_exact_usage_evidence():
+    async def fetch():
+        return [_item()]
+
+    report = await qualify_feeds(
+        feeds=[
+            FeedSpec(
+                "x_api",
+                "metered_capped",
+                fetch,
+                quota_observer=lambda: True,
+                usage_observer=lambda: (10, 50_000),
+            )
+        ],
+        samples_per_feed=1,
+        interval_s=0,
+        clock=lambda: NOW,
+        sleep=_no_sleep,
+    )
+
+    summary = report.feeds[0]
+    assert summary.status is FeedStatus.PASS
+    assert summary.quota_observed
+    assert summary.metered_units == 10
+    assert summary.estimated_cost_usd == "0.050000"
+    assert report.to_dict()["schema_version"] == 2
+
+
+@pytest.mark.asyncio
 async def test_empty_and_stale_content_block_while_invalid_provenance_fails():
     async def empty():
         return []
@@ -105,15 +136,16 @@ def test_real_feed_specs_never_enable_metered_probe_implicitly():
         TextSettings(),
         reddit_client_id="",
         reddit_client_secret="",
-        brightdata_token="token",
-        brightdata_dataset_id="dataset",
-        allow_metered_brightdata_probe=False,
+        x_bearer_token="token",
+        allow_metered_x_probe=False,
+        maximum_x_cost_microusd=200_000,
     )
 
-    brightdata = next(item for item in specs if item.name == "brightdata_x")
+    x_api = next(item for item in specs if item.name == "x_api")
     reddit = next(item for item in specs if item.name == "reddit")
-    assert brightdata.fetcher is None
-    assert "--allow-metered" in (brightdata.blocked_reason or "")
+    assert x_api.fetcher is None
+    assert x_api.cost_mode == "metered_capped"
+    assert "--allow-metered" in (x_api.blocked_reason or "")
     assert reddit.fetcher is None
 
 
@@ -143,3 +175,17 @@ def test_secret_file_must_not_be_empty(tmp_path):
     secret.write_text("\n", encoding="utf-8")
     with pytest.raises(ValueError, match="empty"):
         _read_secret(secret, "provider")
+
+
+@pytest.mark.parametrize(
+    ("usd", "microusd"),
+    [(Decimal("0.20"), 200_000), (Decimal("10"), 10_000_000)],
+)
+def test_x_probe_cost_cap_uses_exact_decimal_micro_usd(usd, microusd):
+    assert _usd_to_microusd(usd) == microusd
+
+
+@pytest.mark.parametrize("usd", [Decimal("0"), Decimal("10.000001"), Decimal("0.0000001")])
+def test_x_probe_cost_cap_rejects_zero_excessive_and_sub_micro_values(usd):
+    with pytest.raises(ValueError):
+        _usd_to_microusd(usd)

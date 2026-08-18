@@ -22,12 +22,19 @@ Example output (matches the spec): `{"topic": "SEC ETF", "sentiment": 0.85, "imp
 | --- | --- | --- | --- |
 | **GDELT** DOC 2.0 | free official news API — already indexes Reuters, Bloomberg, CNBC, Coindesk… | $0 | always |
 | **RSS** | Coindesk + Cointelegraph (crypto-native backstop) | $0 | always |
-| **X / Twitter** | Bright Data **Web Scraper API** — live scrape of influencer handles (sync `/scrape`, async fallback) | metered | when token + dataset id set |
+| **X / Twitter** | official X API v2, User lookup then User Posts timeline | $0.010 per returned User once + $0.005 per returned Post at the registered 2026-08-18 rates | when Bearer Token is set |
 | **Reddit** | **official Reddit API** (OAuth2 application-only) — newest posts per subreddit | $0 | when client id + secret set |
 
-> **X** uses Bright Data's **Web Scraper API** (on-demand live scraping, **not** the static Dataset
-> Marketplace; sync `/scrape` with async fallback). **Reddit** uses the **official Reddit API**
-> (free, OAuth2 application-only) — every poll fetches the newest posts.
+**X** resolves a configured handle through `GET /2/users/by/username/{username}` and
+stores the immutable User ID durably. Subsequent polls use the documented
+`GET /2/users/{id}/tweets` endpoint with app-only Bearer authentication, `since_id`,
+and `exclude=replies,retweets`; broad search is never used. Registered prices are the
+[official $0.010 per User and $0.005 per Post read](https://docs.x.com/x-api/getting-started/pricing).
+Every request reserves its worst-case cost in PostgreSQL before touching X; the
+reservation is then reduced to the resources actually returned. Per-account Post
+cursors advance only after the complete normalize/filter/LLM/outbox pipeline succeeds.
+The default cap is exactly `$10.000000` per UTC month. **Reddit** uses its official
+OAuth2 application-only API.
 
 Each source is isolated: one provider failing (e.g. GDELT rate-limiting) never blinds the
 layer. Reuters/Bloomberg no longer publish public RSS, so GDELT covers them. A real
@@ -48,15 +55,30 @@ uv run --locked kairos-feed-qualify `
 ```
 
 GDELT and each RSS feed are measured independently. Reddit credentials are read only
-from `--reddit-client-id-file` / `--reddit-client-secret-file`. Bright Data is never
-called merely because a token exists: the paid request additionally requires
-`--brightdata-token-file`, `--brightdata-dataset-id`, and the explicit
-`--allow-metered-brightdata-probe` flag. Evidence contains only counts, freshness and
-latency—never article text, OAuth tokens, or provider secrets. Empty or stale content is
+from `--reddit-client-id-file` / `--reddit-client-secret-file`. X is never called merely
+because a token exists: the paid request additionally requires
+`--x-bearer-token-file`, the explicit `--allow-metered-x-probe` flag, and an exact
+`--maximum-x-cost-usd` hard cap. For the four default accounts with ten Posts each,
+the first one-sample probe is bounded to `$0.24` (`$0.04` User resolution + `$0.20`
+Posts). A narrower one-account probe is:
+
+```powershell
+uv run --locked kairos-feed-qualify `
+  --samples 1 `
+  --interval-s 0 `
+  --x-bearer-token-file D:\secure\x_bearer_token `
+  --x-account lookonchain `
+  --allow-metered-x-probe `
+  --maximum-x-cost-usd 0.06 `
+  --output $env:TEMP\kairos-feed-qualification.json
+```
+
+Evidence contains only counts, freshness, latency, metered units and estimated cost—
+never Post text, OAuth tokens, or provider secrets. Empty or stale content is
 `BLOCKED` rather than misclassified as a transport failure; malformed attributable
-evidence is `FAIL`. Because the current `EventSource` API does not expose provider quota
-or billing headers, that limitation remains explicit in every report and reports always
-set `live_orders_allowed=false`.
+evidence is `FAIL`. X rate-limit headers are observed explicitly. Other feeds without
+provider quota evidence remain `BLOCKED`; every report always sets
+`live_orders_allowed=false`.
 
 ## Configuration (env, `KAIROS_` prefix)
 ```bash
@@ -65,9 +87,12 @@ KAIROS_GDELT_QUERY='(bitcoin OR btc OR ethereum OR eth OR crypto OR etf OR sec O
 KAIROS_GDELT_TIMESPAN=15min
 KAIROS_MAX_EVENT_AGE_S=1800
 KAIROS_MAX_FUTURE_SKEW_S=5
-# X / Twitter (optional — Bright Data Web Scraper API)
-KAIROS_BRIGHTDATA_API_TOKEN=...
-KAIROS_BRIGHTDATA_X_DATASET_ID=...
+# X / Twitter (optional — official X API; inject token through a secret provider)
+KAIROS_X_BEARER_TOKEN=...
+# $10.000000/month, $0.005/Post and $0.010/User, represented as integer micro-USD
+KAIROS_X_MONTHLY_BUDGET_MICROUSD=10000000
+KAIROS_X_POST_READ_UNIT_COST_MICROUSD=5000
+KAIROS_X_USER_READ_UNIT_COST_MICROUSD=10000
 # Reddit (optional — official Reddit API, free; register an app at reddit.com/prefs/apps)
 KAIROS_REDDIT_CLIENT_ID=...
 KAIROS_REDDIT_CLIENT_SECRET=...

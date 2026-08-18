@@ -12,13 +12,16 @@ import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
+from kairos_persistence import SourceBudgetExceeded, SourceCursor
+
 from .config import TextSettings
 from .models import NewsItem
-from .sources import BrightDataXSource, GDELTSource, RedditSource, RSSSource
+from .sources import GDELTSource, RedditSource, RSSSource, XApiSource
 
 
 class FeedStatus(StrEnum):
@@ -30,9 +33,11 @@ class FeedStatus(StrEnum):
 @dataclass(frozen=True)
 class FeedSpec:
     name: str
-    cost_mode: Literal["free", "metered_unverified"]
+    cost_mode: Literal["free", "metered_capped"]
     fetcher: Callable[[], Awaitable[list[NewsItem]]] | None
     blocked_reason: str | None = None
+    quota_observer: Callable[[], bool] | None = None
+    usage_observer: Callable[[], tuple[int, int]] | None = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +63,8 @@ class FeedSummary:
     total_fresh_items: int
     p95_latency_s: float | None
     quota_observed: bool
+    metered_units: int
+    estimated_cost_usd: str
     status: FeedStatus
     reasons: tuple[str, ...]
 
@@ -226,11 +233,10 @@ async def qualify_feeds(
             reasons.append("credentials_or_explicit_metered_authorization_missing")
         if len(successful) != samples_per_feed:
             reasons.append("availability_below_threshold")
-        if feed.cost_mode == "metered_unverified" and feed.fetcher is not None:
-            reasons.append("metered_cost_unverified")
-        # Current providers do not expose quota metadata through EventSource.
-        # Preserve this as an explicit blocker rather than inventing a quota.
-        reasons.append("quota_unobserved")
+        quota_observed = feed.quota_observer() if feed.quota_observer is not None else False
+        if not quota_observed:
+            reasons.append("quota_unobserved")
+        metered_units, cost_microusd = feed.usage_observer() if feed.usage_observer is not None else (0, 0)
         status = (
             FeedStatus.FAIL
             if any(item.status is FeedStatus.FAIL for item in samples)
@@ -250,13 +256,15 @@ async def qualify_feeds(
                 p95_latency_s=_percentile(
                     [item.latency_s for item in samples if item.latency_s is not None], 0.95
                 ),
-                quota_observed=False,
+                quota_observed=quota_observed,
+                metered_units=metered_units,
+                estimated_cost_usd=_microusd(cost_microusd),
                 status=status,
                 reasons=tuple(reasons),
             )
         )
     return FeedQualificationReport(
-        schema_version=1,
+        schema_version=2,
         generated_at=now_fn().astimezone(UTC).isoformat(),
         samples_per_feed=samples_per_feed,
         interval_s=interval_s,
@@ -276,14 +284,120 @@ def _read_secret(path: Path | None, name: str) -> str:
     return value
 
 
+class _QualificationState:
+    """Process-local hard cap for one explicitly authorized qualification run."""
+
+    def __init__(self, maximum_cost_microusd: int) -> None:
+        if maximum_cost_microusd <= 0:
+            raise ValueError("maximum X qualification cost must be positive")
+        self.maximum_cost_microusd = maximum_cost_microusd
+        self.cursors: dict[tuple[str, str, str], SourceCursor] = {}
+        self.reservations: dict[tuple[str, str, str], tuple[int, int, str, int | None]] = {}
+        self.committed_units = 0
+        self.committed_cost_microusd = 0
+
+    async def get_cursor(self, service: str, source: str, cursor_key: str) -> SourceCursor | None:
+        return self.cursors.get((service, source, cursor_key))
+
+    async def advance_cursor(self, service: str, source: str, cursor_key: str, cursor_value: str) -> bool:
+        key = (service, source, cursor_key)
+        current = self.cursors.get(key)
+        if current is not None and int(cursor_value) < int(current.cursor_value):
+            raise ValueError("qualification cursor regression")
+        changed = current is None or current.cursor_value != cursor_value
+        self.cursors[key] = SourceCursor(
+            service=service,
+            source=source,
+            cursor_key=cursor_key,
+            cursor_value=cursor_value,
+            updated_at=datetime.now(UTC),
+        )
+        return changed
+
+    async def reserve_usage(
+        self,
+        *,
+        service: str,
+        source: str,
+        reservation_id: str,
+        reserved_units: int,
+        unit_cost_microusd: int,
+        monthly_budget_microusd: int,
+        requested_at: datetime | None = None,
+    ) -> object:
+        del requested_at
+        if monthly_budget_microusd != self.maximum_cost_microusd:
+            raise ValueError("qualification source budget does not match the registered hard cap")
+        key = (service, source, reservation_id)
+        if key in self.reservations:
+            raise ValueError("qualification reservation ID was reused")
+        outstanding = sum(
+            units * unit_cost
+            for units, unit_cost, status, _actual in self.reservations.values()
+            if status == "RESERVED"
+        )
+        requested = reserved_units * unit_cost_microusd
+        if self.committed_cost_microusd + outstanding + requested > self.maximum_cost_microusd:
+            raise SourceBudgetExceeded("X qualification hard cost cap would be exceeded")
+        self.reservations[key] = (reserved_units, unit_cost_microusd, "RESERVED", None)
+        return object()
+
+    async def commit_usage(self, service: str, source: str, reservation_id: str, actual_units: int) -> object:
+        key = (service, source, reservation_id)
+        reserved, unit_cost, status, previous_actual = self.reservations[key]
+        if actual_units > reserved:
+            raise ValueError("qualification actual units exceed reservation")
+        if status == "COMMITTED":
+            if previous_actual != actual_units:
+                raise ValueError("qualification committed units changed")
+            return object()
+        if status != "RESERVED":
+            raise ValueError("qualification reservation was released")
+        self.reservations[key] = (reserved, unit_cost, "COMMITTED", actual_units)
+        self.committed_units += actual_units
+        self.committed_cost_microusd += actual_units * unit_cost
+        return object()
+
+    async def release_usage(self, service: str, source: str, reservation_id: str) -> object:
+        key = (service, source, reservation_id)
+        reserved, unit_cost, status, actual = self.reservations[key]
+        if status == "COMMITTED":
+            raise ValueError("qualification committed usage cannot be released")
+        self.reservations[key] = (reserved, unit_cost, "RELEASED", actual)
+        return object()
+
+    def usage(self) -> tuple[int, int]:
+        return self.committed_units, self.committed_cost_microusd
+
+
+def _microusd(value: int) -> str:
+    return f"{Decimal(value) / Decimal(1_000_000):.6f}"
+
+
+def _usd_to_microusd(value: Decimal) -> int:
+    if not value.is_finite() or value <= 0 or value > Decimal("10"):
+        raise ValueError("maximum X qualification cost must be in (0, 10] USD")
+    micros = value * Decimal(1_000_000)
+    if micros != micros.to_integral_value():
+        raise ValueError("maximum X qualification cost supports at most 6 decimal places")
+    return int(micros)
+
+
+def _decimal(value: str) -> Decimal:
+    try:
+        return Decimal(value)
+    except InvalidOperation as exc:
+        raise argparse.ArgumentTypeError("expected a decimal USD amount") from exc
+
+
 def _build_feed_specs(
     settings: TextSettings,
     *,
     reddit_client_id: str,
     reddit_client_secret: str,
-    brightdata_token: str,
-    brightdata_dataset_id: str,
-    allow_metered_brightdata_probe: bool,
+    x_bearer_token: str,
+    allow_metered_x_probe: bool,
+    maximum_x_cost_microusd: int,
 ) -> list[FeedSpec]:
     feeds: list[FeedSpec] = [
         FeedSpec(
@@ -316,24 +430,38 @@ def _build_feed_specs(
             "Reddit client ID/secret files were not supplied",
         )
     )
-    brightdata = BrightDataXSource(
-        token=brightdata_token,
-        dataset_id=brightdata_dataset_id,
+    qualification_state = _QualificationState(maximum_x_cost_microusd)
+    x_source = XApiSource(
+        bearer_token=x_bearer_token,
         accounts=settings.x_accounts,
-        num_posts=settings.x_num_posts,
-        poll_timeout_s=settings.brightdata_poll_timeout_s,
+        service_name=f"{settings.service_name}:qualification",
+        max_results=settings.x_max_results,
+        max_pages=settings.x_max_pages,
+        timeout_s=settings.x_timeout_s,
+        monthly_budget_microusd=maximum_x_cost_microusd,
+        post_read_unit_cost_microusd=settings.x_post_read_unit_cost_microusd,
+        user_read_unit_cost_microusd=settings.x_user_read_unit_cost_microusd,
+        state=qualification_state,
     )
-    brightdata_allowed = brightdata.enabled and allow_metered_brightdata_probe
+
+    async def fetch_x() -> list[NewsItem]:
+        items = await x_source.fetch()
+        await x_source.commit_fetch()
+        return items
+
+    x_allowed = x_source.enabled and allow_metered_x_probe
     feeds.append(
         FeedSpec(
-            "brightdata_x",
-            "metered_unverified",
-            brightdata.fetch if brightdata_allowed else None,
+            "x_api",
+            "metered_capped",
+            fetch_x if x_allowed else None,
             (
-                "Bright Data token/dataset is missing"
-                if not brightdata.enabled
-                else "metered probe requires --allow-metered-brightdata-probe"
+                "X Bearer Token file was not supplied"
+                if not x_source.enabled
+                else "metered probe requires --allow-metered-x-probe"
             ),
+            quota_observer=lambda: x_source.rate_limit_observed,
+            usage_observer=qualification_state.usage,
         )
     )
     return feeds
@@ -364,9 +492,10 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Qualify Text Scouts source feeds")
     parser.add_argument("--reddit-client-id-file", type=Path)
     parser.add_argument("--reddit-client-secret-file", type=Path)
-    parser.add_argument("--brightdata-token-file", type=Path)
-    parser.add_argument("--brightdata-dataset-id", default="")
-    parser.add_argument("--allow-metered-brightdata-probe", action="store_true")
+    parser.add_argument("--x-bearer-token-file", type=Path)
+    parser.add_argument("--x-account", action="append", dest="x_accounts")
+    parser.add_argument("--allow-metered-x-probe", action="store_true")
+    parser.add_argument("--maximum-x-cost-usd", type=_decimal, default=Decimal("0.20"))
     parser.add_argument("--samples", type=int, default=3)
     parser.add_argument("--interval-s", type=float, default=5.0)
     parser.add_argument("--output", type=Path, required=True)
@@ -377,13 +506,16 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     settings = TextSettings()
+    if args.x_accounts:
+        settings = settings.model_copy(update={"x_accounts": args.x_accounts})
+    maximum_x_cost_microusd = _usd_to_microusd(args.maximum_x_cost_usd)
     feeds = _build_feed_specs(
         settings,
         reddit_client_id=_read_secret(args.reddit_client_id_file, "Reddit client ID"),
         reddit_client_secret=_read_secret(args.reddit_client_secret_file, "Reddit client secret"),
-        brightdata_token=_read_secret(args.brightdata_token_file, "Bright Data token"),
-        brightdata_dataset_id=args.brightdata_dataset_id,
-        allow_metered_brightdata_probe=args.allow_metered_brightdata_probe,
+        x_bearer_token=_read_secret(args.x_bearer_token_file, "X Bearer Token"),
+        allow_metered_x_probe=args.allow_metered_x_probe,
+        maximum_x_cost_microusd=maximum_x_cost_microusd,
     )
     report = asyncio.run(
         qualify_feeds(

@@ -4,6 +4,7 @@ import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import pytest
 from kairos_llm import LLMWorkload
 
 from kairos_text.config import TextSettings
@@ -16,6 +17,11 @@ def test_gateway_health_hook_is_wired():
     assert svc.extractor.gateway._on_health is not None
 
 
+def test_x_bearer_token_is_redacted_by_settings_repr():
+    settings = TextSettings(x_bearer_token="not-for-logs")
+    assert "not-for-logs" not in repr(settings)
+
+
 class _StubSource:
     name = "stub"
     enabled = True
@@ -25,6 +31,19 @@ class _StubSource:
 
     async def fetch(self):
         return list(self._items)
+
+
+class _CommitAwareSource(_StubSource):
+    def __init__(self, items):
+        super().__init__(items)
+        self.commits = 0
+        self.aborts = 0
+
+    async def commit_fetch(self):
+        self.commits += 1
+
+    async def abort_fetch(self):
+        self.aborts += 1
 
 
 class _FakeGateway:
@@ -155,6 +174,41 @@ def test_publish_failure_does_not_consume_dedup_state():
     else:
         raise AssertionError("publish failure must propagate")
     assert svc.dedup.filter_unseen([item]) == [item]
+
+
+def test_paid_source_cursor_commits_only_after_pipeline_success():
+    now = datetime.now(UTC)
+    item = NewsItem(
+        title="SEC approves spot Bitcoin ETF",
+        url="https://x.com/source/status/1",
+        source="source",
+        source_kind="x",
+        published_at=now,
+        timestamp_is_estimated=False,
+    )
+    source = _CommitAwareSource([item])
+    service = TextScoutsService(TextSettings(bus_backend="memory"), gateway=_FakeGateway(), sources=[source])
+    assert asyncio.run(service.poll_once()) == 1
+    assert source.commits == 1
+    assert source.aborts == 0
+
+    failing_source = _CommitAwareSource([item])
+    failing = TextScoutsService(
+        TextSettings(bus_backend="memory"), gateway=_FakeGateway(), sources=[failing_source]
+    )
+    failing.bus = _FailingBus()
+    with pytest.raises(RuntimeError, match="bus unavailable"):
+        asyncio.run(failing.poll_once())
+    assert failing_source.commits == 0
+    assert failing_source.aborts == 1
+
+
+def test_official_x_refuses_paid_polling_without_durable_state():
+    service = TextScoutsService(
+        TextSettings(bus_backend="memory", x_bearer_token="configured"), gateway=_FakeGateway()
+    )
+    with pytest.raises(RuntimeError, match="durable PostgreSQL"):
+        asyncio.run(service.poll_once())
 
 
 def test_partial_publish_retry_reuses_exact_signal_id_and_event_time():

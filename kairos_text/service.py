@@ -2,7 +2,7 @@
 
 Pipeline::
 
-    sources (GDELT / RSS / Bright Data X+Reddit)
+    sources (GDELT / RSS / official X + Reddit)
         -> normalize  (clean, bound, drop empties)
         -> dedup      (collapse repeats across a rolling window)
         -> relevance  (cheap keyword/impact filter + top-K)
@@ -23,7 +23,7 @@ from kairos_core.bus import build_bus
 from kairos_core.contracts import LLMHealthEvent
 from kairos_core.logging import configure_logging, get_logger
 from kairos_core.topics import Topics
-from kairos_persistence import DurableMessageBus
+from kairos_persistence import DurableMessageBus, SourceStateRepository
 
 from .config import TextSettings
 from .dedup import EventDeduplicator
@@ -32,7 +32,14 @@ from .freshness import EventFreshnessFilter
 from .models import NewsItem
 from .normalize import EventNormalizer
 from .sentiment import SentimentExtractor
-from .sources import BrightDataXSource, EventSource, GDELTSource, RedditSource, RSSSource
+from .sources import (
+    CommitAwareEventSource,
+    EventSource,
+    GDELTSource,
+    RedditSource,
+    RSSSource,
+    XApiSource,
+)
 
 log = get_logger("text-scouts")
 
@@ -80,12 +87,16 @@ class TextScoutsService:
             sources.append(RSSSource(s.rss_feeds))
         if s.enable_x:
             sources.append(
-                BrightDataXSource(
-                    token=s.brightdata_api_token,
-                    dataset_id=s.brightdata_x_dataset_id,
+                XApiSource(
+                    bearer_token=s.x_bearer_token.get_secret_value(),
                     accounts=s.x_accounts,
-                    num_posts=s.x_num_posts,
-                    poll_timeout_s=s.brightdata_poll_timeout_s,
+                    service_name=s.service_name,
+                    max_results=s.x_max_results,
+                    max_pages=s.x_max_pages,
+                    timeout_s=s.x_timeout_s,
+                    monthly_budget_microusd=s.x_monthly_budget_microusd,
+                    post_read_unit_cost_microusd=s.x_post_read_unit_cost_microusd,
+                    user_read_unit_cost_microusd=s.x_user_read_unit_cost_microusd,
                 )
             )
         if s.enable_reddit:
@@ -101,10 +112,26 @@ class TextScoutsService:
             )
         return sources
 
-    async def _gather(self) -> list[NewsItem]:
+    async def _prepare_sources(self) -> None:
+        unbound = [
+            source
+            for source in self.sources
+            if isinstance(source, XApiSource) and source.enabled and not source.state_attached
+        ]
+        if not unbound:
+            return
+        if not isinstance(self.bus, DurableMessageBus):
+            raise RuntimeError("paid official X polling requires the durable PostgreSQL runtime")
+        await self.bus.start()
+        repository = SourceStateRepository(self.bus.database.pool)
+        for source in unbound:
+            source.attach_state(repository)
+
+    async def _gather_with_sources(self) -> tuple[list[NewsItem], list[EventSource]]:
         active = [src for src in self.sources if src.enabled]
         results = await asyncio.gather(*(src.fetch() for src in active), return_exceptions=True)
         items: list[NewsItem] = []
+        successful: list[EventSource] = []
         for src, res in zip(active, results, strict=False):
             if isinstance(res, asyncio.CancelledError):
                 # Cancellation is lifecycle control, not a recoverable source error.
@@ -113,32 +140,47 @@ class TextScoutsService:
                 log.warning("source.error", source=src.name, error=str(res))
                 continue
             items.extend(res)
+            successful.append(src)
+        return items, successful
+
+    async def _gather(self) -> list[NewsItem]:
+        items, _successful = await self._gather_with_sources()
         return items
 
     async def poll_once(self) -> int:
         """Run the pipeline once; returns the number of SentimentSignals published."""
-        raw = await self._gather()
-        timely = self.freshness.select(self.normalizer.normalize(raw))
-        candidates = self.dedup.collapse_batch(timely)
-        unseen = self.dedup.filter_unseen(candidates)
-        relevant = self.filter.select(unseen)
-        log.info(
-            "text.filtered",
-            fetched=len(raw),
-            timely=len(timely),
-            unique=len(candidates),
-            kept=len(relevant),
-        )
-        published = 0
-        signals = await self.extractor.extract(relevant)
-        published_refs: set[str] = set()
-        for sig in signals:
-            await self.bus.publish(Topics.SENTIMENT_SIGNAL, sig)
-            log.info("text.signal", topic=sig.topic, sentiment=sig.sentiment, impact=sig.impact.value)
-            published_refs.update(sig.sources)
-            published += 1
-        self.dedup.remember(item for item in relevant if published_refs.intersection(item.provenance_refs))
-        return published
+        await self._prepare_sources()
+        raw, successful_sources = await self._gather_with_sources()
+        commit_aware = [source for source in successful_sources if isinstance(source, CommitAwareEventSource)]
+        try:
+            timely = self.freshness.select(self.normalizer.normalize(raw))
+            candidates = self.dedup.collapse_batch(timely)
+            unseen = self.dedup.filter_unseen(candidates)
+            relevant = self.filter.select(unseen)
+            log.info(
+                "text.filtered",
+                fetched=len(raw),
+                timely=len(timely),
+                unique=len(candidates),
+                kept=len(relevant),
+            )
+            published = 0
+            signals = await self.extractor.extract(relevant)
+            published_refs: set[str] = set()
+            for sig in signals:
+                await self.bus.publish(Topics.SENTIMENT_SIGNAL, sig)
+                log.info("text.signal", topic=sig.topic, sentiment=sig.sentiment, impact=sig.impact.value)
+                published_refs.update(sig.sources)
+                published += 1
+            self.dedup.remember(
+                item for item in relevant if published_refs.intersection(item.provenance_refs)
+            )
+            for source in commit_aware:
+                await source.commit_fetch()
+            return published
+        except BaseException:
+            await asyncio.gather(*(source.abort_fetch() for source in commit_aware), return_exceptions=True)
+            raise
 
     async def _publish_health(self, model: str, provider: str, ok: bool, kind: str, latency_s: float) -> None:
         await self.bus.publish(

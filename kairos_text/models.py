@@ -2,7 +2,7 @@
 
 A ``NewsItem`` is the single normalized unit every source produces, regardless of
 whether it came from a news aggregator (GDELT), an RSS feed, or a social API
-(X / Reddit via Bright Data). ``source_kind`` records the provenance and
+(X / Reddit through their official APIs). ``source_kind`` records the provenance and
 ``engagement`` carries a coarse popularity signal (likes+reposts for X, score for
 Reddit, ``0`` for news) so the relevance filter can weight loud social posts.
 """

@@ -1,15 +1,13 @@
 """Text Scouts configuration.
 
 The 1B layer is an event aggregator over *official* APIs (no self-hosted scrapers
-or proxies): GDELT for news, RSS as a backstop, and Bright Data for X / Reddit.
-The Bright Data sources turn themselves on only when an API token + dataset id are
-configured, so the layer runs fine for free out of the box.
+or proxies): GDELT for news, RSS as a backstop, and the official X and Reddit APIs.
 """
 
 from __future__ import annotations
 
 from kairos_core.config import CoreSettings
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 
 class TextSettings(CoreSettings):
@@ -35,12 +33,15 @@ class TextSettings(CoreSettings):
         "https://cointelegraph.com/rss",
     ]
 
-    # --- X / Twitter via Bright Data Web Scraper API (token-gated) ---
-    brightdata_api_token: str = ""
-    brightdata_x_dataset_id: str = ""
-    brightdata_poll_timeout_s: float = 90.0
+    # --- Official X API v2 (app-only bearer, pay per User/Post resource) ---
+    x_bearer_token: SecretStr = SecretStr("")
     x_accounts: list[str] = ["elonmusk", "lookonchain", "whale_alert", "cz_binance"]
-    x_num_posts: int = 10
+    x_max_results: int = Field(default=10, ge=5, le=100)
+    x_max_pages: int = Field(default=3, ge=1, le=10)
+    x_timeout_s: float = Field(default=30.0, gt=0)
+    x_monthly_budget_microusd: int = Field(default=10_000_000, ge=0, le=10_000_000)
+    x_post_read_unit_cost_microusd: int = Field(default=5_000, ge=5_000)
+    x_user_read_unit_cost_microusd: int = Field(default=10_000, ge=10_000)
 
     # --- Reddit via the official Reddit API (OAuth2 application-only; free) ---
     reddit_client_id: str = ""
@@ -52,7 +53,7 @@ class TextSettings(CoreSettings):
 
     @property
     def enable_x(self) -> bool:
-        return bool(self.brightdata_api_token and self.brightdata_x_dataset_id and self.x_accounts)
+        return bool(self.x_bearer_token.get_secret_value() and self.x_accounts)
 
     @property
     def enable_reddit(self) -> bool:

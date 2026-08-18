@@ -1,9 +1,7 @@
 """Common interface for every Text Scouts event source.
 
 A source is anything that can asynchronously return a batch of ``NewsItem``s from
-an *official* API or feed. We deliberately avoid self-hosted scrapers / proxies:
-each source is either free-and-official (GDELT, RSS) or a managed API (Bright Data
-for X / Reddit), which removes 403s, captchas, user-agent juggling and bans.
+an *official* API or feed. We deliberately avoid self-hosted scrapers and proxies.
 """
 
 from __future__ import annotations
@@ -25,5 +23,14 @@ class EventSource(Protocol):
         ...
 
     async def fetch(self) -> list[NewsItem]:
-        """Return the latest batch of items; must swallow its own network errors."""
+        """Return the latest batch; the service isolates ordinary source errors."""
         ...
+
+
+@runtime_checkable
+class CommitAwareEventSource(EventSource, Protocol):
+    """A source whose remote cursor advances only after the pipeline succeeds."""
+
+    async def commit_fetch(self) -> None: ...
+
+    async def abort_fetch(self) -> None: ...
