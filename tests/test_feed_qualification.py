@@ -179,13 +179,13 @@ def test_secret_file_must_not_be_empty(tmp_path):
 
 @pytest.mark.parametrize(
     ("usd", "microusd"),
-    [(Decimal("0.20"), 200_000), (Decimal("10"), 10_000_000)],
+    [(Decimal("0.20"), 200_000), (Decimal("2"), 2_000_000)],
 )
 def test_x_probe_cost_cap_uses_exact_decimal_micro_usd(usd, microusd):
     assert _usd_to_microusd(usd) == microusd
 
 
-@pytest.mark.parametrize("usd", [Decimal("0"), Decimal("10.000001"), Decimal("0.0000001")])
+@pytest.mark.parametrize("usd", [Decimal("0"), Decimal("2.000001"), Decimal("0.0000001")])
 def test_x_probe_cost_cap_rejects_zero_excessive_and_sub_micro_values(usd):
     with pytest.raises(ValueError):
         _usd_to_microusd(usd)

@@ -76,6 +76,7 @@ class TextScoutsService:
                 DenyLLMUsageBudget,
                 LLMGateway,
                 LLMSettings,
+                Provider,
             )
 
             budget = (
@@ -86,6 +87,10 @@ class TextScoutsService:
             gateway = BudgetedLLMGateway(
                 LLMGateway(settings=LLMSettings(max_retries=0), on_health=self._publish_health),
                 budget,
+                monthly_budgets_microusd={
+                    Provider.OPENAI: 12_000_000,
+                    Provider.DEEPSEEK: 1_000_000,
+                },
             )
         self.extractor = SentimentExtractor(gateway, source=self.settings.service_name)
 

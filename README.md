@@ -33,8 +33,11 @@ and `exclude=replies,retweets`; broad search is never used. Registered prices ar
 Every request reserves its worst-case cost in PostgreSQL before touching X; the
 reservation is then reduced to the resources actually returned. Per-account Post
 cursors advance only after the complete normalize/filter/LLM/outbox pipeline succeeds.
-The default cap is exactly `$10.000000` per UTC month. **Reddit** uses its official
-OAuth2 application-only API.
+The default cap is exactly `$2.000000` per UTC month. The ordered default watchlist
+starts with SEC, Federal Reserve, CFTC, Binance and official project accounts for
+BTC, ETH, SOL, BNB and XRP; Lookonchain and Whale Alert are lower-priority observers.
+Celebrity posts are not configured as standalone directional evidence. **Reddit**
+uses its official OAuth2 application-only API.
 
 Each source is isolated: one provider failing (e.g. GDELT rate-limiting) never blinds the
 layer. Reuters/Bloomberg no longer publish public RSS, so GDELT covers them. A real
@@ -58,9 +61,9 @@ GDELT and each RSS feed are measured independently. Reddit credentials are read 
 from `--reddit-client-id-file` / `--reddit-client-secret-file`. X is never called merely
 because a token exists: the paid request additionally requires
 `--x-bearer-token-file`, the explicit `--allow-metered-x-probe` flag, and an exact
-`--maximum-x-cost-usd` hard cap. For the four default accounts with ten Posts each,
-the first one-sample probe is bounded to `$0.24` (`$0.04` User resolution + `$0.20`
-Posts). A narrower one-account probe is:
+`--maximum-x-cost-usd` hard cap. Use a narrow one-account qualification first; with
+five Posts its worst-case first probe is `$0.035` (`$0.010` User resolution +
+`$0.025` Posts):
 
 ```powershell
 uv run --locked kairos-feed-qualify `
@@ -89,8 +92,8 @@ KAIROS_MAX_EVENT_AGE_S=1800
 KAIROS_MAX_FUTURE_SKEW_S=5
 # X / Twitter (optional — official X API; inject token through a secret provider)
 KAIROS_X_BEARER_TOKEN=...
-# $9 runtime allocation under the $10 provider cap; integer micro-USD
-KAIROS_X_MONTHLY_BUDGET_MICROUSD=9000000
+# Hard $2 UTC-month X allocation; integer micro-USD
+KAIROS_X_MONTHLY_BUDGET_MICROUSD=2000000
 KAIROS_X_POST_READ_UNIT_COST_MICROUSD=5000
 KAIROS_X_USER_READ_UNIT_COST_MICROUSD=10000
 # Reddit (optional — official Reddit API, free; register an app at reddit.com/prefs/apps)
@@ -98,9 +101,9 @@ KAIROS_REDDIT_CLIENT_ID=...
 KAIROS_REDDIT_CLIENT_SECRET=...
 ```
 
-Paid DeepSeek calls are also fail-closed. In the durable runtime, Text Scouts
-uses the shared PostgreSQL `kairos-llm-v1/deepseek` ledger and the `$4.50`
-runtime ceiling before contacting the provider. An in-memory runtime has no
+Paid LLM calls are also fail-closed. In the durable runtime, Text Scouts uses the
+shared PostgreSQL provider ledger with exact shadow ceilings of `$1` for DeepSeek
+and `$12` for OpenAI before contacting either provider. An in-memory runtime has no
 durable ledger and therefore denies paid calls, falling back locally.
 
 ## Local development

@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
-from kairos_llm import BudgetedLLMGateway, DenyLLMUsageBudget, LLMWorkload
+from kairos_llm import BudgetedLLMGateway, DenyLLMUsageBudget, LLMWorkload, Provider
 from kairos_persistence import DurableLLMUsageBudget
 
 from kairos_text.config import TextSettings
@@ -23,6 +23,30 @@ def test_gateway_health_hook_is_wired():
 def test_durable_runtime_wires_shared_provider_budget():
     svc = TextScoutsService(TextSettings(bus_backend="redis"))
     assert isinstance(svc.extractor.gateway.budget, DurableLLMUsageBudget)
+    assert svc.extractor.gateway.monthly_budgets_microusd == {
+        Provider.OPENAI: 12_000_000,
+        Provider.DEEPSEEK: 1_000_000,
+    }
+
+
+def test_default_x_watchlist_is_official_first_and_budget_bounded():
+    settings = TextSettings()
+    assert settings.x_accounts[:9] == [
+        "SECGov",
+        "federalreserve",
+        "CFTC",
+        "binance",
+        "bitcoincoreorg",
+        "ethereum",
+        "solana",
+        "BNBCHAIN",
+        "Ripple",
+    ]
+    assert settings.x_accounts[-2:] == ["lookonchain", "whale_alert"]
+    assert "elonmusk" not in settings.x_accounts
+    assert "cz_binance" not in settings.x_accounts
+    assert settings.x_monthly_budget_microusd == 2_000_000
+    assert settings.x_max_results == 5
 
 
 def test_x_bearer_token_is_redacted_by_settings_repr():

@@ -375,8 +375,8 @@ def _microusd(value: int) -> str:
 
 
 def _usd_to_microusd(value: Decimal) -> int:
-    if not value.is_finite() or value <= 0 or value > Decimal("10"):
-        raise ValueError("maximum X qualification cost must be in (0, 10] USD")
+    if not value.is_finite() or value <= 0 or value > Decimal("2"):
+        raise ValueError("maximum X qualification cost must be in (0, 2] USD")
     micros = value * Decimal(1_000_000)
     if micros != micros.to_integral_value():
         raise ValueError("maximum X qualification cost supports at most 6 decimal places")

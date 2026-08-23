@@ -16,7 +16,7 @@ RATE_HEADERS = {
 
 
 class _State:
-    def __init__(self, *, budget_microusd: int = 10_000_000) -> None:
+    def __init__(self, *, budget_microusd: int = 2_000_000) -> None:
         self.cursors: dict[tuple[str, str, str], str] = {
             ("kairos-text-scouts", "x", "user-id:lookonchain"): "42"
         }
@@ -303,7 +303,7 @@ async def test_initial_registration_reads_only_newest_page() -> None:
 
 @pytest.mark.asyncio
 async def test_budget_is_reserved_before_network_and_pending_fetch_cannot_be_overwritten() -> None:
-    state = _State(budget_microusd=49_999)
+    state = _State(budget_microusd=24_999)
     network_called = False
 
     async def requester(_account, _params):
@@ -317,16 +317,47 @@ async def test_budget_is_reserved_before_network_and_pending_fetch_cannot_be_ove
         state=state,
         requester=requester,
     )
-    with pytest.raises(SourceBudgetExceeded):
-        await source.fetch()
+    assert await source.fetch() == []
     assert not network_called
+    assert source.budget_exhausted
+    await source.commit_fetch()
 
-    state.budget_microusd = 10_000_000
+    state.budget_microusd = 2_000_000
     await source.fetch()
     with pytest.raises(RuntimeError, match="committed or aborted"):
         await source.fetch()
     await source.abort_fetch()
     assert await source.fetch() == []
+
+
+@pytest.mark.asyncio
+async def test_budget_exhaustion_preserves_higher_priority_accounts_without_network_retry() -> None:
+    state = _State(budget_microusd=25_000)
+    state.cursors[("text", "x", "user-id:secgov")] = "1"
+    state.cursors[("text", "x", "user-id:lookonchain")] = "2"
+    endpoints: list[str] = []
+
+    async def requester(endpoint, _params):
+        endpoints.append(endpoint)
+        assert endpoint == "/2/users/1/tweets"
+        return XApiResponse(200, {"data": [_post("100")], "meta": {}}, RATE_HEADERS)
+
+    source = XApiSource(
+        bearer_token="secret",
+        accounts=["SECGov", "lookonchain"],
+        service_name="text",
+        state=state,
+        requester=requester,
+    )
+
+    items = await source.fetch()
+
+    assert [item.source for item in items] == ["secgov"]
+    assert endpoints == ["/2/users/1/tweets"]
+    assert source.budget_exhausted
+    await source.commit_fetch()
+    assert state.cursors[("text", "x", "secgov")] == "100"
+    assert ("text", "x", "lookonchain") not in state.cursors
 
 
 def test_configuration_rejects_aliases_and_invalid_handles() -> None:
@@ -350,6 +381,6 @@ def test_configuration_rejects_aliases_and_invalid_handles() -> None:
         XApiSource(
             bearer_token="x",
             accounts=["lookonchain"],
-            monthly_budget_microusd=10_000_001,
+            monthly_budget_microusd=2_000_001,
         )
     assert XApiSource(bearer_token="", accounts=["lookonchain"]).enabled is False

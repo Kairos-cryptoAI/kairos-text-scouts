@@ -12,14 +12,14 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 import aiohttp
-from kairos_persistence import SourceCursor
+from kairos_persistence import SourceBudgetExceeded, SourceCursor
 
 from ..models import NewsItem
 
 X_API_BASE = "https://api.x.com"
 REGISTERED_POST_READ_MICROUSD = 5_000
 REGISTERED_USER_READ_MICROUSD = 10_000
-REGISTERED_MONTHLY_BUDGET_MICROUSD = 10_000_000
+REGISTERED_MONTHLY_BUDGET_MICROUSD = 2_000_000
 _HANDLE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
 _RESOURCE_ID = re.compile(r"^(0|[1-9][0-9]{0,19})$")
 _TWEET_FIELDS = "author_id,conversation_id,created_at,entities,lang,public_metrics,referenced_tweets"
@@ -74,10 +74,10 @@ class XApiSource:
         bearer_token: str,
         accounts: list[str],
         service_name: str = "kairos-text-scouts",
-        max_results: int = 10,
-        max_pages: int = 3,
+        max_results: int = 5,
+        max_pages: int = 2,
         timeout_s: float = 30.0,
-        monthly_budget_microusd: int = 10_000_000,
+        monthly_budget_microusd: int = 2_000_000,
         post_read_unit_cost_microusd: int = 5_000,
         user_read_unit_cost_microusd: int = 10_000,
         state: SourceStateStore | None = None,
@@ -128,6 +128,7 @@ class XApiSource:
         self._pending_cursors: dict[str, str] = {}
         self._fetch_pending = False
         self.rate_limit_observed = False
+        self.budget_exhausted = False
 
     @property
     def enabled(self) -> bool:
@@ -152,9 +153,17 @@ class XApiSource:
 
         items: list[NewsItem] = []
         pending: dict[str, str] = {}
+        self.budget_exhausted = False
         try:
             for account in self.accounts:
-                account_items, newest_id = await self._fetch_account(account)
+                try:
+                    account_items, newest_id = await self._fetch_account(account)
+                except SourceBudgetExceeded:
+                    # The ordered watchlist is a priority queue. Preserve and
+                    # commit already-fetched higher-priority evidence; the
+                    # failing reservation made no provider call.
+                    self.budget_exhausted = True
+                    break
                 items.extend(account_items)
                 if newest_id is not None:
                     pending[account] = newest_id

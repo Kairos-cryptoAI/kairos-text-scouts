@@ -10,7 +10,7 @@ layer alive if the model is down.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from .dedup import EventDeduplicator
 from .filter import LocalRelevanceFilter
