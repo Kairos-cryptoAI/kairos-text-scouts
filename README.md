@@ -85,6 +85,27 @@ observed explicitly. Other feeds without
 provider quota evidence remain `BLOCKED`; every report always sets
 `live_orders_allowed=false`.
 
+## Frozen labelled-news qualification
+
+`kairos-text-qualify` replays a versioned corpus through normalization, the
+30-minute freshness gate, local relevance and the strict DeepSeek sentiment schema.
+It covers bullish/bearish official events for BTC, ETH, SOL, BNB and XRP plus
+contradictory text, prompt injection, stale/future timestamps and estimated time.
+The gate requires exact directional labels, attributable evidence, 100% schema-valid
+model calls and zero paid calls for freshness-rejected cases.
+
+The network-free harness validates the gate without spending provider budget:
+
+```sh
+uv run --locked kairos-text-qualify --static \
+  --output /tmp/kairos-text-harness.json
+```
+
+A real run takes DeepSeek, Redis and PostgreSQL one-value secret files, reserves
+every call in the shared durable `kairos-llm-v1/deepseek` ledger and refuses a
+planned run over `$0.02` by default (hard maximum `$0.10`). It never polls X and
+always emits `live_orders_allowed=false`.
+
 ## Configuration (env, `KAIROS_` prefix)
 ```bash
 # News (free, on by default)

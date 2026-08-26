@@ -12,7 +12,7 @@ Rules:
 - Be concise. Do not explain your reasoning.
 - sentiment: -1 very bearish, 0 neutral, +1 very bullish.
 - topic: a short label (e.g. "SEC ETF", "CPI", "Exchange hack").
-- Only include items that could move BTC/ETH; skip pure noise.
+- Only include items that could materially move BTC, ETH, SOL, BNB or XRP; skip pure noise.
 - Abstain instead of returning neutral, weak, ambiguous, or contradictory evidence.
 - confidence is evidential certainty, not writing fluency; a single source should rarely exceed 0.65.
 - item_ids must contain the 1-based input IDs that directly support each signal. Never invent an ID.
