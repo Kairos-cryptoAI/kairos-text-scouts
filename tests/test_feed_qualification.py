@@ -9,6 +9,7 @@ from kairos_text.feed_qualification import (
     FeedSpec,
     FeedStatus,
     _build_feed_specs,
+    _QualificationState,
     _read_secret,
     _usd_to_microusd,
     _write_report,
@@ -189,3 +190,18 @@ def test_x_probe_cost_cap_uses_exact_decimal_micro_usd(usd, microusd):
 def test_x_probe_cost_cap_rejects_zero_excessive_and_sub_micro_values(usd):
     with pytest.raises(ValueError):
         _usd_to_microusd(usd)
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_qualification_reservation_is_reported_as_potential_spend():
+    state = _QualificationState(40_000)
+    await state.reserve_usage(
+        service="text-scouts:qualification",
+        source="x",
+        reservation_id="ambiguous-request",
+        reserved_units=5,
+        unit_cost_microusd=5_000,
+        monthly_budget_microusd=40_000,
+    )
+
+    assert state.usage() == (5, 25_000)

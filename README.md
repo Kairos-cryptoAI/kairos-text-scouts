@@ -79,7 +79,9 @@ uv run --locked kairos-feed-qualify `
 Evidence contains only counts, freshness, latency, metered units and estimated cost—
 never Post text, OAuth tokens, or provider secrets. Empty or stale content is
 `BLOCKED` rather than misclassified as a transport failure; malformed attributable
-evidence is `FAIL`. X rate-limit headers are observed explicitly. Other feeds without
+evidence is `FAIL`. A transport timeout after dispatch reports the full outstanding
+reservation as potential spend because billing is ambiguous. X rate-limit headers are
+observed explicitly. Other feeds without
 provider quota evidence remain `BLOCKED`; every report always sets
 `live_orders_allowed=false`.
 

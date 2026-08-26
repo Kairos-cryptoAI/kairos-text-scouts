@@ -367,7 +367,21 @@ class _QualificationState:
         return object()
 
     def usage(self) -> tuple[int, int]:
-        return self.committed_units, self.committed_cost_microusd
+        # A transport failure after dispatch has ambiguous billing semantics.
+        # Report every still-reserved unit as potentially metered so evidence
+        # never understates provider spend merely because the process exits.
+        reserved_units = sum(
+            units for units, _unit_cost, status, _actual in self.reservations.values() if status == "RESERVED"
+        )
+        reserved_cost = sum(
+            units * unit_cost
+            for units, unit_cost, status, _actual in self.reservations.values()
+            if status == "RESERVED"
+        )
+        return (
+            self.committed_units + reserved_units,
+            self.committed_cost_microusd + reserved_cost,
+        )
 
 
 def _microusd(value: int) -> str:
