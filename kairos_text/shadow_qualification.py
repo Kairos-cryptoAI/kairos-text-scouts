@@ -138,6 +138,7 @@ class CaseObservation:
     model: str | None
     latency_ms: int | None
     cost_usd: float
+    failure_kind: str | None
     reasons: tuple[str, ...]
 
 
@@ -173,17 +174,20 @@ class _ObservedGateway:
         self.gateway = gateway
         self.results: list[LLMResult | None] = []
         self.schema_valid: list[bool] = []
+        self.failure_kinds: list[str | None] = []
 
     async def complete(self, **kwargs: Any) -> LLMResult:
         try:
             result = await self.gateway.complete(**kwargs)
             SentimentBatch.model_validate(result.parsed)
-        except Exception:
+        except Exception as exc:
             self.results.append(None)
             self.schema_valid.append(False)
+            self.failure_kinds.append(type(exc).__name__)
             raise
         self.results.append(result)
         self.schema_valid.append(True)
+        self.failure_kinds.append(None)
         return result
 
 
@@ -280,13 +284,14 @@ async def qualify_text_corpus(
     planned_cost_ceiling_usd: float = 0.0,
     maximum_planned_cost_usd: float = 0.0,
     now: datetime | None = None,
+    selected_case_ids: Sequence[str] | None = None,
 ) -> TextQualificationReport:
     instant = (now or datetime.now(UTC)).astimezone(UTC)
     observed = _ObservedGateway(gateway)
     extractor = SentimentExtractor(observed, source="text-scouts:qualification")
     observations: list[CaseObservation] = []
 
-    for case in corpus.cases:
+    for case in _select_cases(corpus, selected_case_ids):
         selected = _selected(case, instant)
         before = len(observed.results)
         started = time.monotonic()
@@ -295,6 +300,7 @@ async def qualify_text_corpus(
         model_called = len(observed.results) == before + 1
         result = observed.results[-1] if model_called else None
         schema_valid = observed.schema_valid[-1] if model_called else None
+        failure_kind = observed.failure_kinds[-1] if model_called else None
         actual_impacts = tuple(sorted(signal.impact.value for signal in signals))
         expected_impacts = tuple(sorted(item.value for item in case.expected_impacts))
         allowed_refs = {ref for item in selected for ref in item.provenance_refs}
@@ -346,6 +352,7 @@ async def qualify_text_corpus(
                 model=model,
                 latency_ms=latency_ms,
                 cost_usd=cost,
+                failure_kind=failure_kind,
                 reasons=tuple(reasons),
             )
         )
@@ -367,6 +374,7 @@ async def qualify_text_corpus(
                 model=None,
                 latency_ms=None,
                 cost_usd=0.0,
+                failure_kind=None,
                 reasons=("actual_cost_exceeded_planned_ceiling",),
             )
         )
@@ -387,12 +395,29 @@ async def qualify_text_corpus(
     )
 
 
-def planned_cost_ceiling_usd(corpus: TextCorpus) -> float:
+def _select_cases(
+    corpus: TextCorpus,
+    selected_case_ids: Sequence[str] | None,
+) -> tuple[TextCorpusCase, ...]:
+    if not selected_case_ids:
+        return corpus.cases
+    requested = tuple(dict.fromkeys(selected_case_ids))
+    by_id = {item.case_id: item for item in corpus.cases}
+    unknown = sorted(set(requested) - set(by_id))
+    if unknown:
+        raise ValueError(f"unknown corpus case IDs: {', '.join(unknown)}")
+    return tuple(by_id[item] for item in requested)
+
+
+def planned_cost_ceiling_usd(
+    corpus: TextCorpus,
+    selected_case_ids: Sequence[str] | None = None,
+) -> float:
     extractor = SentimentExtractor(_ScriptedGateway())
     now = datetime(2030, 1, 1, tzinfo=UTC)
     price = PriceTable()
     total = 0.0
-    for case in corpus.cases:
+    for case in _select_cases(corpus, selected_case_ids):
         if not case.expected_model_call:
             continue
         batch = _selected(case, now)
@@ -469,6 +494,7 @@ async def _live_gateway(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", type=Path)
+    parser.add_argument("--case", action="append", dest="case_ids")
     parser.add_argument("--static", action="store_true")
     parser.add_argument("--deepseek-key-file", type=Path)
     parser.add_argument("--redis-url-file", type=Path)
@@ -485,7 +511,7 @@ def _parser() -> argparse.ArgumentParser:
 
 async def _run(args: argparse.Namespace) -> TextQualificationReport:
     corpus, digest = load_corpus(args.corpus)
-    planned = planned_cost_ceiling_usd(corpus)
+    planned = planned_cost_ceiling_usd(corpus, args.case_ids)
     maximum = float(args.maximum_planned_cost_usd)
     if not math.isfinite(maximum) or maximum <= 0 or maximum > HARD_MAXIMUM_PLANNED_COST_USD:
         raise ValueError(f"maximum planned cost must be in (0, {HARD_MAXIMUM_PLANNED_COST_USD}] USD")
@@ -498,6 +524,7 @@ async def _run(args: argparse.Namespace) -> TextQualificationReport:
             mode="STATIC_HARNESS",
             corpus_sha256=digest,
             maximum_planned_cost_usd=maximum,
+            selected_case_ids=args.case_ids,
         )
     if not all((args.deepseek_key_file, args.redis_url_file, args.database_url_file)):
         raise ValueError("live qualification requires DeepSeek, Redis and database secret files")
@@ -516,6 +543,7 @@ async def _run(args: argparse.Namespace) -> TextQualificationReport:
             corpus_sha256=digest,
             planned_cost_ceiling_usd=planned,
             maximum_planned_cost_usd=maximum,
+            selected_case_ids=args.case_ids,
         )
     finally:
         await gateway.close()

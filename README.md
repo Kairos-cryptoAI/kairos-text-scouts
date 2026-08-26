@@ -105,6 +105,8 @@ A real run takes DeepSeek, Redis and PostgreSQL one-value secret files, reserves
 every call in the shared durable `kairos-llm-v1/deepseek` ledger and refuses a
 planned run over `$0.02` by default (hard maximum `$0.10`). It never polls X and
 always emits `live_orders_allowed=false`.
+Use repeatable `--case CASE_ID` selectors after a failure so a diagnostic retry
+cannot spend on news cases that already passed.
 
 ## Configuration (env, `KAIROS_` prefix)
 ```bash
