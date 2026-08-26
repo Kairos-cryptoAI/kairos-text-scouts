@@ -59,9 +59,9 @@ async def test_targeted_case_replay_does_not_recall_passed_news() -> None:
         corpus_sha256=digest,
         maximum_planned_cost_usd=0.02,
         now=NOW,
-        selected_case_ids=("sol_official_outage_recovery",),
+        selected_case_ids=("sol_official_etf_approval",),
     )
-    assert [item.case_id for item in report.observations] == ["sol_official_outage_recovery"]
+    assert [item.case_id for item in report.observations] == ["sol_official_etf_approval"]
     with pytest.raises(ValueError, match="unknown corpus case"):
         planned_cost_ceiling_usd(corpus, ("unknown",))
 

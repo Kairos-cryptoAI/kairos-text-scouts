@@ -46,7 +46,7 @@ from .prompts import SENTIMENT_SYSTEM
 from .schemas import SentimentBatch
 from .sentiment import SentimentExtractor
 
-DEFAULT_CORPUS_RESOURCE = "text_scout_v1.json"
+DEFAULT_CORPUS_RESOURCE = "text_scout_v2.json"
 DEFAULT_MAXIMUM_PLANNED_COST_USD = 0.02
 HARD_MAXIMUM_PLANNED_COST_USD = 0.10
 QUALIFICATION_MAX_OUTPUT_TOKENS = 512
@@ -103,7 +103,7 @@ class TextCorpusCase(BaseModel):
 class TextCorpus(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     cases: tuple[TextCorpusCase, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
