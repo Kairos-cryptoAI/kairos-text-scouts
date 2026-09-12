@@ -205,3 +205,69 @@ async def test_ambiguous_qualification_reservation_is_reported_as_potential_spen
     )
 
     assert state.usage() == (5, 25_000)
+
+
+def test_metered_probe_refuses_process_local_only_budget():
+    with pytest.raises(ValueError, match="shared durable campaign"):
+        _build_feed_specs(
+            TextSettings(),
+            reddit_client_id="",
+            reddit_client_secret="",
+            x_bearer_token="not-used",
+            allow_metered_x_probe=True,
+            maximum_x_cost_microusd=200_000,
+        )
+
+
+@pytest.mark.asyncio
+async def test_probe_layers_local_cap_over_durable_cap_and_preserves_ambiguous_spend():
+    from unittest.mock import AsyncMock
+
+    from kairos_persistence import SourceBudgetExceeded
+
+    durable = AsyncMock()
+    first = _QualificationState(40_000, durable)
+    values = dict(
+        service="qualification",
+        source="x",
+        reservation_id="first",
+        reserved_units=5,
+        unit_cost_microusd=5000,
+        monthly_budget_microusd=40_000,
+    )
+    await first.reserve_usage(**values)
+    assert durable.reserve_usage.call_args.kwargs["monthly_budget_microusd"] == 2_000_000
+    assert first.usage() == (5, 25_000)
+    # Simulated restart loses only the run report, never the provider reservation.
+    durable.reserve_usage.side_effect = SourceBudgetExceeded("campaign exhausted")
+    second = _QualificationState(40_000, durable)
+    with pytest.raises(SourceBudgetExceeded, match="exhausted"):
+        await second.reserve_usage(**(values | {"reservation_id": "second"}))
+    assert second.usage() == (0, 0)
+    assert first.usage() == (5, 25_000)
+    durable.commit_usage.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_x_probe_commit_and_cursor_wait_for_durable_ack():
+    from unittest.mock import AsyncMock
+
+    durable = AsyncMock()
+    state = _QualificationState(40_000, durable)
+    await state.reserve_usage(
+        service="qualification",
+        source="x",
+        reservation_id="r1",
+        reserved_units=5,
+        unit_cost_microusd=5000,
+        monthly_budget_microusd=40_000,
+    )
+    durable.commit_usage.side_effect = RuntimeError("unknown database ACK")
+    with pytest.raises(RuntimeError, match="ACK"):
+        await state.commit_usage("qualification", "x", "r1", 3)
+    assert state.usage() == (5, 25_000)
+    durable.commit_usage.side_effect = None
+    await state.commit_usage("qualification", "x", "r1", 3)
+    assert state.usage() == (3, 15_000)
+    await state.advance_cursor("qualification", "x", "account", "123")
+    durable.advance_cursor.assert_awaited_once_with("qualification", "x", "account", "123")

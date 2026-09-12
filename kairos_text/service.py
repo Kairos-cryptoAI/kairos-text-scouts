@@ -23,7 +23,12 @@ from kairos_core.bus import build_bus
 from kairos_core.contracts import LLMHealthEvent
 from kairos_core.logging import configure_logging, get_logger
 from kairos_core.topics import Topics
-from kairos_persistence import DurableLLMUsageBudget, DurableMessageBus, SourceStateRepository
+from kairos_persistence import (
+    QUALIFICATION_CAMPAIGN_ID,
+    DurableLLMUsageBudget,
+    DurableMessageBus,
+    SourceStateRepository,
+)
 
 from .config import TextSettings
 from .dedup import EventDeduplicator
@@ -141,7 +146,7 @@ class TextScoutsService:
         if not isinstance(self.bus, DurableMessageBus):
             raise RuntimeError("paid official X polling requires the durable PostgreSQL runtime")
         await self.bus.start()
-        repository = SourceStateRepository(self.bus.database.pool)
+        repository = SourceStateRepository(self.bus.database.pool, campaign_id=QUALIFICATION_CAMPAIGN_ID)
         for source in unbound:
             source.attach_state(repository)
 

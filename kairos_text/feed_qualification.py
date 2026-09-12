@@ -17,7 +17,13 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from kairos_persistence import SourceBudgetExceeded, SourceCursor
+from kairos_persistence import (
+    QUALIFICATION_CAMPAIGN_ID,
+    Database,
+    SourceBudgetExceeded,
+    SourceCursor,
+    SourceStateRepository,
+)
 
 from .config import TextSettings
 from .models import NewsItem
@@ -285,21 +291,30 @@ def _read_secret(path: Path | None, name: str) -> str:
 
 
 class _QualificationState:
-    """Process-local hard cap for one explicitly authorized qualification run."""
+    """Per-run report/cap layered over the shared durable campaign ledger.
 
-    def __init__(self, maximum_cost_microusd: int) -> None:
+    A missing repository is supported only by offline unit tests; the metered
+    feed builder refuses that configuration before any external request.
+    """
+
+    def __init__(self, maximum_cost_microusd: int, durable: SourceStateRepository | None = None) -> None:
         if maximum_cost_microusd <= 0:
             raise ValueError("maximum X qualification cost must be positive")
         self.maximum_cost_microusd = maximum_cost_microusd
+        self.durable = durable
         self.cursors: dict[tuple[str, str, str], SourceCursor] = {}
         self.reservations: dict[tuple[str, str, str], tuple[int, int, str, int | None]] = {}
         self.committed_units = 0
         self.committed_cost_microusd = 0
 
     async def get_cursor(self, service: str, source: str, cursor_key: str) -> SourceCursor | None:
+        if self.durable is not None:
+            return await self.durable.get_cursor(service, source, cursor_key)
         return self.cursors.get((service, source, cursor_key))
 
     async def advance_cursor(self, service: str, source: str, cursor_key: str, cursor_value: str) -> bool:
+        if self.durable is not None:
+            return await self.durable.advance_cursor(service, source, cursor_key, cursor_value)
         key = (service, source, cursor_key)
         current = self.cursors.get(key)
         if current is not None and int(cursor_value) < int(current.cursor_value):
@@ -325,7 +340,6 @@ class _QualificationState:
         monthly_budget_microusd: int,
         requested_at: datetime | None = None,
     ) -> object:
-        del requested_at
         if monthly_budget_microusd != self.maximum_cost_microusd:
             raise ValueError("qualification source budget does not match the registered hard cap")
         key = (service, source, reservation_id)
@@ -339,6 +353,16 @@ class _QualificationState:
         requested = reserved_units * unit_cost_microusd
         if self.committed_cost_microusd + outstanding + requested > self.maximum_cost_microusd:
             raise SourceBudgetExceeded("X qualification hard cost cap would be exceeded")
+        if self.durable is not None:
+            await self.durable.reserve_usage(
+                service=service,
+                source=source,
+                reservation_id=reservation_id,
+                reserved_units=reserved_units,
+                unit_cost_microusd=unit_cost_microusd,
+                monthly_budget_microusd=2_000_000,
+                requested_at=requested_at,
+            )
         self.reservations[key] = (reserved_units, unit_cost_microusd, "RESERVED", None)
         return object()
 
@@ -353,6 +377,8 @@ class _QualificationState:
             return object()
         if status != "RESERVED":
             raise ValueError("qualification reservation was released")
+        if self.durable is not None:
+            await self.durable.commit_usage(service, source, reservation_id, actual_units)
         self.reservations[key] = (reserved, unit_cost, "COMMITTED", actual_units)
         self.committed_units += actual_units
         self.committed_cost_microusd += actual_units * unit_cost
@@ -363,6 +389,8 @@ class _QualificationState:
         reserved, unit_cost, status, actual = self.reservations[key]
         if status == "COMMITTED":
             raise ValueError("qualification committed usage cannot be released")
+        if self.durable is not None:
+            await self.durable.release_usage(service, source, reservation_id)
         self.reservations[key] = (reserved, unit_cost, "RELEASED", actual)
         return object()
 
@@ -412,7 +440,14 @@ def _build_feed_specs(
     x_bearer_token: str,
     allow_metered_x_probe: bool,
     maximum_x_cost_microusd: int,
+    campaign_state: SourceStateRepository | None = None,
 ) -> list[FeedSpec]:
+    if (
+        allow_metered_x_probe
+        and x_bearer_token
+        and (campaign_state is None or campaign_state.campaign_id != QUALIFICATION_CAMPAIGN_ID)
+    ):
+        raise ValueError("metered X qualification requires the shared durable campaign ledger")
     feeds: list[FeedSpec] = [
         FeedSpec(
             "gdelt",
@@ -444,7 +479,7 @@ def _build_feed_specs(
             "Reddit client ID/secret files were not supplied",
         )
     )
-    qualification_state = _QualificationState(maximum_x_cost_microusd)
+    qualification_state = _QualificationState(maximum_x_cost_microusd, campaign_state)
     x_source = XApiSource(
         bearer_token=x_bearer_token,
         accounts=settings.x_accounts,
@@ -523,22 +558,37 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.x_accounts:
         settings = settings.model_copy(update={"x_accounts": args.x_accounts})
     maximum_x_cost_microusd = _usd_to_microusd(args.maximum_x_cost_usd)
-    feeds = _build_feed_specs(
-        settings,
-        reddit_client_id=_read_secret(args.reddit_client_id_file, "Reddit client ID"),
-        reddit_client_secret=_read_secret(args.reddit_client_secret_file, "Reddit client secret"),
-        x_bearer_token=_read_secret(args.x_bearer_token_file, "X Bearer Token"),
-        allow_metered_x_probe=args.allow_metered_x_probe,
-        maximum_x_cost_microusd=maximum_x_cost_microusd,
-    )
-    report = asyncio.run(
-        qualify_feeds(
-            feeds=feeds,
-            samples_per_feed=args.samples,
-            interval_s=args.interval_s,
-            maximum_item_age_s=settings.max_event_age_s,
-        )
-    )
+
+    async def run() -> FeedQualificationReport:
+        database = Database() if args.allow_metered_x_probe else None
+        try:
+            campaign_state = None
+            if database is not None:
+                await database.connect()
+                campaign_state = SourceStateRepository(database.pool, campaign_id=QUALIFICATION_CAMPAIGN_ID)
+                # No migrations or budget registration in a probe. The operator
+                # must first reconcile historical spend in the explicit campaign.
+                await campaign_state.campaign_usage("x")
+            feeds = _build_feed_specs(
+                settings,
+                reddit_client_id=_read_secret(args.reddit_client_id_file, "Reddit client ID"),
+                reddit_client_secret=_read_secret(args.reddit_client_secret_file, "Reddit client secret"),
+                x_bearer_token=_read_secret(args.x_bearer_token_file, "X Bearer Token"),
+                allow_metered_x_probe=args.allow_metered_x_probe,
+                maximum_x_cost_microusd=maximum_x_cost_microusd,
+                campaign_state=campaign_state,
+            )
+            return await qualify_feeds(
+                feeds=feeds,
+                samples_per_feed=args.samples,
+                interval_s=args.interval_s,
+                maximum_item_age_s=settings.max_event_age_s,
+            )
+        finally:
+            if database is not None:
+                await database.close()
+
+    report = asyncio.run(run())
     _write_report(args.output, report, overwrite=args.overwrite)
     print(f"Feed qualification: {report.status.value}; live_orders_allowed=false")
     return 0 if report.status is FeedStatus.PASS else 2

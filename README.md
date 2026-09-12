@@ -1,5 +1,13 @@
 # kairos-text-scouts
 
+Metered X runtime and qualification require the same already adopted
+`kairos-dev-qualification-v1` PostgreSQL campaign. Its cumulative X ceiling is
+$2 across all prior committed and unresolved usage, service identities, months
+and restarts. A qualification run's smaller `--maximum-x-cost-usd` remains an
+additional local limit. Missing adoption fails closed; a probe never migrates
+the database or invents a zero-spend history. Free-only qualification does not
+need a database connection.
+
 **Layer 1B — Text Scouts.** A universal **event aggregator** over *official* APIs/feeds
 (no self-hosted scrapers, no proxies, no 403/captcha juggling). It normalizes and
 deduplicates events, drops the noise with a cheap **local filter**, then submits the
