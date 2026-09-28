@@ -12,8 +12,8 @@ need a database connection.
 (no self-hosted scrapers, no proxies, no 403/captcha juggling). It normalizes and
 deduplicates events, drops the noise with a cheap **local filter**, then submits the
 few relevant items through the explicit `TEXT_SCOUTS` LLM workload. Provider/model
-selection belongs to `kairos-llm`; the workload currently maps to the low-cost,
-non-thinking sentiment route. The model only ever sees pre-filtered text. Items
+selection belongs to `kairos-llm`; the workload currently maps to
+`deepseek-flash` with thinking disabled. The model only ever sees pre-filtered text. Items
 without a trustworthy publication time, older than 30 minutes, or more than 5
 seconds in the future are rejected before deduplication. The same five-second
 ingestion skew bound is used by Router; future evidence is still never scored

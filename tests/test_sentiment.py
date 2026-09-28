@@ -74,7 +74,7 @@ def test_empty_batch_returns_nothing():
 class FailingGateway:
     async def complete(self, *, system, user, workload, schema=None):
         assert workload is LLMWorkload.TEXT_SCOUTS
-        raise RuntimeError("deepseek-v4-flash 503")
+        raise RuntimeError("deepseek-flash 503")
 
 
 def test_local_fallback_when_flash_unavailable():

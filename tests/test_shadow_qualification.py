@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from kairos_llm import LLMResult, TokenUsage
+from kairos_llm import LLMResult, PriceTable, TokenUsage
 
 from kairos_text.filter import LocalRelevanceFilter
 from kairos_text.models import NewsItem
@@ -85,7 +85,7 @@ class _AlwaysBullishGateway:
         return LLMResult(
             content=parsed.model_dump_json(),
             parsed=parsed,
-            model="deepseek-v4-flash",
+            model="deepseek-flash",
             effort="low",
             usage=TokenUsage(input_tokens=10, output_tokens=10),
             cost_usd=0.001,
@@ -93,7 +93,7 @@ class _AlwaysBullishGateway:
             workload="text_scouts",
             provider="deepseek",
             request_id="unsafe",
-            resolved_model="deepseek-v4-flash",
+            resolved_model="deepseek-flash",
             budget_reservation_id="kairos-llm-v1:deepseek:unsafe",
         )
 
@@ -157,6 +157,23 @@ def test_planned_cost_and_static_cli_are_bounded_and_sanitized(tmp_path: Path) -
     assert "official.example.invalid" not in rendered
     assert "execute a long" not in rendered
     assert main(["--static", "--output", str(output)]) == 2
+
+
+def test_planned_cost_reserves_the_active_text_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[tuple[str, TokenUsage]] = []
+
+    def reserve(_self: PriceTable, model: str, usage: TokenUsage) -> float:
+        seen.append((model, usage))
+        return 0.001
+
+    monkeypatch.setattr(PriceTable, "reservation_cost", reserve)
+    corpus, _digest = load_corpus()
+    expected_calls = sum(case.expected_model_call for case in corpus.cases)
+
+    assert planned_cost_ceiling_usd(corpus) == pytest.approx(expected_calls * 0.001)
+    assert len(seen) == expected_calls
+    assert all(model == "deepseek-flash" for model, _usage in seen)
+    assert all(usage.input_tokens > 0 and usage.output_tokens == 512 for _model, usage in seen)
 
 
 def test_static_mode_rejects_secret_files_before_reading(tmp_path: Path) -> None:

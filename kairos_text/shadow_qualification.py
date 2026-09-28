@@ -31,6 +31,7 @@ from kairos_llm import (
     LLMResult,
     LLMSettings,
     LLMWorkload,
+    ModelRouter,
     PriceTable,
     TokenUsage,
 )
@@ -416,6 +417,7 @@ def planned_cost_ceiling_usd(
     extractor = SentimentExtractor(_ScriptedGateway())
     now = datetime(2030, 1, 1, tzinfo=UTC)
     price = PriceTable()
+    model = ModelRouter().resolve(workload=LLMWorkload.TEXT_SCOUTS).choice.model
     total = 0.0
     for case in _select_cases(corpus, selected_case_ids):
         if not case.expected_model_call:
@@ -427,8 +429,8 @@ def planned_cost_ceiling_usd(
             context,
             SentimentBatch,
         )
-        total += price.cost(
-            "deepseek-v4-flash",
+        total += price.reservation_cost(
+            model,
             TokenUsage(
                 input_tokens=input_ceiling,
                 output_tokens=QUALIFICATION_MAX_OUTPUT_TOKENS,
