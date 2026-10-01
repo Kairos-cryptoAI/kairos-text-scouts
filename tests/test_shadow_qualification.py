@@ -172,7 +172,7 @@ def test_planned_cost_reserves_the_active_text_route(monkeypatch: pytest.MonkeyP
 
     assert planned_cost_ceiling_usd(corpus) == pytest.approx(expected_calls * 0.001)
     assert len(seen) == expected_calls
-    assert all(model == "deepseek-flash" for model, _usage in seen)
+    assert all(model == "gpt-6-luna" for model, _usage in seen)
     assert all(usage.input_tokens > 0 and usage.output_tokens == 512 for _model, usage in seen)
 
 
