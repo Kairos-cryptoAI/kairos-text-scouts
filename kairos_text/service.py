@@ -19,7 +19,7 @@ import asyncio
 from collections.abc import Callable
 from datetime import datetime
 
-from kairos_core.bus import build_bus
+from kairos_core.bus import MessageBus, build_bus
 from kairos_core.contracts import LLMHealthEvent
 from kairos_core.logging import configure_logging, get_logger
 from kairos_core.topics import Topics
@@ -55,16 +55,20 @@ class TextScoutsService:
         settings: TextSettings | None = None,
         *,
         gateway=None,
+        bus: MessageBus | None = None,
         sources: list[EventSource] | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.settings = settings or TextSettings()
-        transport = build_bus(self.settings)
-        self.bus = (
-            transport
-            if self.settings.bus_backend == "memory"
-            else DurableMessageBus(transport, service_name=self.settings.service_name)
-        )
+        if bus is not None:
+            self.bus = bus
+        else:
+            transport = build_bus(self.settings)
+            self.bus = (
+                transport
+                if self.settings.bus_backend == "memory"
+                else DurableMessageBus(transport, service_name=self.settings.service_name)
+            )
         self.normalizer = EventNormalizer()
         self.dedup = EventDeduplicator(self.settings.dedup_window_s)
         self.freshness = EventFreshnessFilter(

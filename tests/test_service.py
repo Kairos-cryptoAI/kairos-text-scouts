@@ -99,6 +99,23 @@ class _FakeGateway:
         )
 
 
+def test_explicit_bus_is_used_without_constructing_default_transport(monkeypatch):
+    from kairos_core.bus import InMemoryBus
+
+    def forbidden(_settings):
+        raise AssertionError("default transport must not be constructed")
+
+    monkeypatch.setattr("kairos_text.service.build_bus", forbidden)
+    bus = InMemoryBus()
+    service = TextScoutsService(
+        TextSettings(_env_file=None, bus_backend="memory"),
+        bus=bus,
+        gateway=_FakeGateway(),
+        sources=[],
+    )
+    assert service.bus is bus
+
+
 class _CancelledSource:
     name = "cancelled"
     enabled = True
