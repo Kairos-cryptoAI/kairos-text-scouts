@@ -69,7 +69,7 @@ class SentimentExtractor:
                 else SentimentBatch.model_validate(res.parsed)
             )
         except Exception:
-            # DeepSeek-V4-Flash unavailable -> degrade to local filtering mode.
+            # The selected provider route is unavailable: retain only the coarse local fallback.
             return local_sentiment(items, source=f"{self.source}:local")
 
         indexed_items = {index: item for index, item in enumerate(items, start=1)}
