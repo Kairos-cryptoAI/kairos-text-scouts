@@ -33,6 +33,7 @@ from kairos_llm import (
     LLMWorkload,
     ModelRouter,
     PriceTable,
+    Provider,
     TokenUsage,
 )
 from kairos_persistence import DurableLLMUsageBudget, DurableMessageBus, PersistenceSettings
@@ -330,6 +331,16 @@ async def qualify_text_corpus(
         latency_ms = math.ceil(result.latency_s * 1_000) if result is not None else None
         cost = result.cost_usd if result is not None else 0.0
         if model_called and result is not None:
+            expected_route = ModelRouter(allowed_providers={Provider.OPENAI}).resolve(
+                workload=LLMWorkload.TEXT_SCOUTS
+            )
+            if mode == "LIVE":
+                if result.provider != expected_route.choice.provider.value:
+                    reasons.append("provider_route_mismatch")
+                if result.workload != LLMWorkload.TEXT_SCOUTS.value:
+                    reasons.append("workload_mismatch")
+                if result.model != expected_route.choice.model:
+                    reasons.append("model_route_mismatch")
             mandatory = (
                 result.provider,
                 result.resolved_model or result.model,
@@ -468,7 +479,7 @@ def _write_report(path: Path, report: TextQualificationReport, *, overwrite: boo
 
 async def _live_gateway(
     *,
-    deepseek_key: str,
+    openai_key: str,
     redis_url: str,
     database_url: str,
 ) -> tuple[BudgetedLLMGateway, DurableMessageBus]:
@@ -481,11 +492,17 @@ async def _live_gateway(
     gateway = BudgetedLLMGateway(
         LLMGateway(
             LLMSettings(
-                deepseek_api_key=deepseek_key,
+                # Explicit fields and disabled dotenv loading prevent a local
+                # environment from silently supplying another provider or endpoint.
+                _env_file=None,
+                openai_api_key=openai_key,
+                openai_base_url=None,
+                deepseek_api_key="",
                 max_retries=0,
                 max_output_tokens=QUALIFICATION_MAX_OUTPUT_TOKENS,
                 request_timeout_s=MAXIMUM_CASE_LATENCY_S,
-            )
+            ),
+            router=ModelRouter(allowed_providers={Provider.OPENAI}),
         ),
         DurableLLMUsageBudget(runtime),
         monthly_budgets_microusd=REGISTERED_PROVIDER_BUDGETS_MICROUSD,
@@ -498,7 +515,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--corpus", type=Path)
     parser.add_argument("--case", action="append", dest="case_ids")
     parser.add_argument("--static", action="store_true")
-    parser.add_argument("--deepseek-key-file", type=Path)
+    # Kept as a hard-rejected compatibility flag so stale scripts fail closed.
+    parser.add_argument("--deepseek-key-file", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--openai-key-file", type=Path)
     parser.add_argument("--redis-url-file", type=Path)
     parser.add_argument("--database-url-file", type=Path)
     parser.add_argument(
@@ -512,13 +531,15 @@ def _parser() -> argparse.ArgumentParser:
 
 
 async def _run(args: argparse.Namespace) -> TextQualificationReport:
+    if args.deepseek_key_file:
+        raise ValueError("--deepseek-key-file is no longer supported; use --openai-key-file")
     corpus, digest = load_corpus(args.corpus)
     planned = planned_cost_ceiling_usd(corpus, args.case_ids)
     maximum = float(args.maximum_planned_cost_usd)
     if not math.isfinite(maximum) or maximum <= 0 or maximum > HARD_MAXIMUM_PLANNED_COST_USD:
         raise ValueError(f"maximum planned cost must be in (0, {HARD_MAXIMUM_PLANNED_COST_USD}] USD")
     if args.static:
-        if any((args.deepseek_key_file, args.redis_url_file, args.database_url_file)):
+        if any((args.openai_key_file, args.redis_url_file, args.database_url_file)):
             raise ValueError("--static cannot be combined with secret files")
         return await qualify_text_corpus(
             corpus,
@@ -528,12 +549,12 @@ async def _run(args: argparse.Namespace) -> TextQualificationReport:
             maximum_planned_cost_usd=maximum,
             selected_case_ids=args.case_ids,
         )
-    if not all((args.deepseek_key_file, args.redis_url_file, args.database_url_file)):
-        raise ValueError("live qualification requires DeepSeek, Redis and database secret files")
+    if not all((args.openai_key_file, args.redis_url_file, args.database_url_file)):
+        raise ValueError("live qualification requires OpenAI, Redis and database secret files")
     if planned > maximum:
         raise ValueError(f"planned qualification cost ${planned:.8f} exceeds ${maximum:.8f}")
     gateway, runtime = await _live_gateway(
-        deepseek_key=_read_secret(args.deepseek_key_file, "DeepSeek"),
+        openai_key=_read_secret(args.openai_key_file, "OpenAI"),
         redis_url=_read_secret(args.redis_url_file, "Redis URL"),
         database_url=_read_secret(args.database_url_file, "database URL"),
     )

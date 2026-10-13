@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,6 +18,8 @@ from kairos_text.shadow_qualification import (
     HARD_MAXIMUM_PLANNED_COST_USD,
     QualificationStatus,
     TextCorpus,
+    _live_gateway,
+    _read_secret,
     _ScriptedGateway,
     load_corpus,
     main,
@@ -115,6 +118,39 @@ async def test_text_corpus_rejects_wrong_direction_and_prompt_injection_signal()
     assert "prompt_injection_produced_signal" in injection.reasons
     bearish = next(item for item in report.observations if item.case_id.startswith("eth_"))
     assert "directional_label_mismatch" in bearish.reasons
+    assert "provider_route_mismatch" in bearish.reasons
+    assert "model_route_mismatch" in bearish.reasons
+
+
+async def test_live_qualification_requires_expected_workload_and_paid_provenance() -> None:
+    class WrongWorkloadGateway:
+        async def complete(self, **_kwargs) -> LLMResult:
+            parsed = SentimentBatch.model_validate({"signals": []})
+            return LLMResult(
+                content=parsed.model_dump_json(),
+                parsed=parsed,
+                model="gpt-6-luna",
+                effort="low",
+                workload="aggregator_normal",
+                provider="openai",
+                request_id="",
+                resolved_model="gpt-6-luna",
+                budget_reservation_id=None,
+            )
+
+    corpus, digest = load_corpus()
+    report = await qualify_text_corpus(
+        corpus,
+        WrongWorkloadGateway(),
+        mode="LIVE",
+        corpus_sha256=digest,
+        selected_case_ids=("btc_official_approval",),
+        now=NOW,
+    )
+
+    observation = report.observations[0]
+    assert "workload_mismatch" in observation.reasons
+    assert "paid_provenance_missing" in observation.reasons
 
 
 def test_corpus_requires_all_five_assets_and_unique_cases() -> None:
@@ -189,3 +225,108 @@ def test_static_mode_rejects_secret_files_before_reading(tmp_path: Path) -> None
         )
         == 2
     )
+
+
+def test_legacy_deepseek_flag_is_rejected_without_reading_or_running(tmp_path: Path, capsys) -> None:
+    assert (
+        main(
+            [
+                "--deepseek-key-file",
+                str(tmp_path / "must-not-be-read"),
+                "--output",
+                str(tmp_path / "report.json"),
+            ]
+        )
+        == 2
+    )
+    assert "no longer supported" in capsys.readouterr().out
+    assert not (tmp_path / "report.json").exists()
+
+
+def test_live_cli_requires_explicit_openai_credential_file(tmp_path: Path, capsys) -> None:
+    assert main(["--output", str(tmp_path / "report.json")]) == 2
+    assert "requires OpenAI, Redis and database" in capsys.readouterr().out
+    assert not (tmp_path / "report.json").exists()
+
+
+def test_openai_credential_file_must_be_one_nonempty_line(tmp_path: Path) -> None:
+    secret_path = tmp_path / "test-openai-key.txt"
+    secret_path.write_text("synthetic-test-key\n", encoding="utf-8")
+    assert _read_secret(secret_path, "OpenAI") == "synthetic-test-key"
+    secret_path.write_text("\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="exactly one non-empty line"):
+        _read_secret(secret_path, "OpenAI")
+    secret_path.write_text("line-one\nline-two\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="exactly one non-empty line"):
+        _read_secret(secret_path, "OpenAI")
+
+
+def test_live_gateway_pins_openai_route_and_ignores_ambient_provider_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kairos_llm import LLMWorkload, Provider
+
+    import kairos_text.shadow_qualification as qualification
+
+    captured: dict[str, object] = {}
+
+    class Runtime:
+        async def close(self) -> None:
+            return None
+
+    class Gateway:
+        def __init__(self, settings, *, router):
+            captured["settings"] = settings
+            captured["router"] = router
+
+    class BudgetedGateway:
+        def __init__(self, gateway, _budget, *, monthly_budgets_microusd):
+            captured["gateway"] = gateway
+            captured["monthly_budgets"] = monthly_budgets_microusd
+
+    monkeypatch.setenv("KAIROS_DEEPSEEK_API_KEY", "ambient-deepseek-test-value")
+    monkeypatch.setenv("KAIROS_OPENAI_API_KEY", "ambient-openai-test-value")
+    monkeypatch.setenv("KAIROS_OPENAI_BASE_URL", "https://ambient.invalid")
+    monkeypatch.setattr(qualification, "TextSettings", lambda **_kwargs: object())
+    monkeypatch.setattr(qualification, "build_bus", lambda _settings: object())
+    monkeypatch.setattr(qualification, "DurableMessageBus", lambda *args, **_kwargs: Runtime())
+    monkeypatch.setattr(qualification, "DurableLLMUsageBudget", lambda _runtime: object())
+    monkeypatch.setattr(qualification, "LLMGateway", Gateway)
+    monkeypatch.setattr(qualification, "BudgetedLLMGateway", BudgetedGateway)
+
+    budgeted, runtime = asyncio.run(
+        _live_gateway(
+            openai_key="explicit-test-openai-key",
+            redis_url="redis://127.0.0.1:6379/0",
+            database_url="postgresql://test:test@127.0.0.1/test",
+        )
+    )
+
+    settings = captured["settings"]
+    router = captured["router"]
+    route = router.resolve(workload=LLMWorkload.TEXT_SCOUTS)
+    assert settings.openai_api_key == "explicit-test-openai-key"
+    assert settings.openai_base_url is None
+    assert settings.deepseek_api_key == ""
+    assert settings.max_retries == 0
+    assert route.choice.provider is Provider.OPENAI
+    assert route.choice.model == "gpt-6-luna"
+    assert budgeted is not None and runtime is not None
+
+
+def test_static_cli_remains_credential_free_with_ambient_keys(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kairos_text.shadow_qualification as qualification
+
+    monkeypatch.setenv("KAIROS_OPENAI_API_KEY", "ambient-openai-test-value")
+    monkeypatch.setenv("KAIROS_DEEPSEEK_API_KEY", "ambient-deepseek-test-value")
+
+    async def forbidden_live_gateway(**_kwargs):
+        raise AssertionError("static qualification attempted live gateway construction")
+
+    monkeypatch.setattr(qualification, "_live_gateway", forbidden_live_gateway)
+    assert main(["--static", "--output", str(tmp_path / "static.json")]) == 0
+    payload = json.loads((tmp_path / "static.json").read_text(encoding="utf-8"))
+    assert {item["provider"] for item in payload["observations"] if item["provider"]} == {"offline"}
