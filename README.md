@@ -12,12 +12,12 @@ need a database connection.
 (no self-hosted scrapers, no proxies, no 403/captcha juggling). It normalizes and
 deduplicates events, drops the noise with a cheap **local filter**, then submits the
 few relevant items through the explicit `TEXT_SCOUTS` LLM workload. Provider/model
-selection belongs to `kairos-llm`; the workload currently maps to
-`deepseek-flash` with thinking disabled. The model only ever sees pre-filtered text. Items
-without a trustworthy publication time, older than 30 minutes, or more than 5
-seconds in the future are rejected before deduplication. The same five-second
-ingestion skew bound is used by Router; future evidence is still never scored
-against an earlier market snapshot.
+selection belongs to `kairos-llm`; the current default Text route is OpenAI
+`gpt-6-luna` with low reasoning. The default Text router allows only OpenAI.
+The model only ever sees pre-filtered text. Items without a trustworthy publication
+time, older than 30 minutes, or more than 5 seconds in the future are rejected
+before deduplication. The same five-second ingestion skew bound is used by Router;
+future evidence is still never scored against an earlier market snapshot.
 
 ## Pipeline
 ```
@@ -49,8 +49,9 @@ uses its official OAuth2 application-only API.
 
 Each source is isolated: one provider failing (e.g. GDELT rate-limiting) never blinds the
 layer. Reuters/Bloomberg no longer publish public RSS, so GDELT covers them. A real
-transformer (BERT/FinBERT) can replace `LocalRelevanceFilter` behind its `select()` interface.
-If DeepSeek-Flash is down the layer degrades to a deterministic local keyword sentiment.
+transformer (BERT/FinBERT) is a possible future replacement for `LocalRelevanceFilter`;
+the current implementation is the local filter. If the OpenAI Text route is unavailable,
+the layer degrades to deterministic local keyword sentiment.
 The degraded path emits only attributable directional evidence; neutral,
 contradictory, stale, or provenance-free items are an abstention (no signal).
 
@@ -96,7 +97,7 @@ provider quota evidence remain `BLOCKED`; every report always sets
 ## Frozen labelled-news qualification
 
 `kairos-text-qualify` replays a versioned corpus through normalization, the
-30-minute freshness gate, local relevance and the strict DeepSeek sentiment schema.
+30-minute freshness gate, local relevance and the strict structured sentiment schema.
 It covers bullish/bearish official events for BTC, ETH, SOL, BNB and XRP plus
 contradictory text, prompt injection, stale/future timestamps and estimated time.
 The gate requires exact directional labels, attributable evidence, 100% schema-valid
@@ -109,10 +110,11 @@ uv run --locked kairos-text-qualify --static \
   --output /tmp/kairos-text-harness.json
 ```
 
-A real run takes DeepSeek, Redis and PostgreSQL one-value secret files, reserves
-every call in the shared durable `kairos-llm-v1/deepseek` ledger and refuses a
+A real run takes OpenAI, Redis and PostgreSQL one-value secret files, reserves
+each call in the shared durable `kairos-llm-v1/openai` ledger and refuses a
 planned run over `$0.02` by default (hard maximum `$0.10`). It never polls X and
-always emits `live_orders_allowed=false`.
+always emits `live_orders_allowed=false`. This describes the current OpenAI-only
+route; it does not revise or re-label evidence from earlier qualification runs.
 Use repeatable `--case CASE_ID` selectors after a failure so a diagnostic retry
 cannot spend on news cases that already passed.
 
@@ -135,9 +137,10 @@ KAIROS_REDDIT_CLIENT_SECRET=...
 ```
 
 Paid LLM calls are also fail-closed. In the durable runtime, Text Scouts uses the
-shared PostgreSQL provider ledger with exact shadow ceilings of `$1` for DeepSeek
-and `$12` for OpenAI before contacting either provider. An in-memory runtime has no
-durable ledger and therefore denies paid calls, falling back locally.
+shared PostgreSQL provider ledger with registered monthly ceilings of `$1` for
+DeepSeek and `$12` for OpenAI; the current default Text route permits only OpenAI.
+An in-memory runtime has no durable ledger and therefore denies paid calls, falling
+back locally.
 
 ## Local development
 ```powershell
