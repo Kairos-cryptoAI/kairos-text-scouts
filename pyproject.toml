@@ -14,7 +14,7 @@ dependencies = [
     "kairos-core>=0.3,<0.4",
     "kairos-llm>=0.1,<0.2",
     "kairos-persistence>=0.1,<0.2",
-    "aiohttp>=3.9,<4",
+    "aiohttp>=3.14.4,<4",
     "defusedxml>=0.7.1,<1",
     "redis>=6.4,<9",
     "structlog>=24.1,<27",
@@ -36,9 +36,9 @@ dev = [
 required-version = "==0.12.3"
 
 [tool.uv.sources]
-kairos-core = { git = "https://github.com/Kairos-cryptoAI/kairos-core.git", rev = "6937eb4773fc00afaf5ba4e020b28b689f48e377" }
-kairos-llm = { git = "https://github.com/Kairos-cryptoAI/kairos-llm.git", rev = "c2207a5bd8bbf39e7d5728f95e52c96a47eca344" }
-kairos-persistence = { git = "https://github.com/Kairos-cryptoAI/kairos-persistence.git", rev = "ea0c73395352f71da196270fe16659f1f0298a52" }
+kairos-core = { git = "https://github.com/Kairos-cryptoAI/kairos-core.git", rev = "37165e3078b53364513f876f4243357ba19a19ba" }
+kairos-llm = { git = "https://github.com/Kairos-cryptoAI/kairos-llm.git", rev = "f786eb41ad88788d6c0156b4d330981f80c07a7d" }
+kairos-persistence = { git = "https://github.com/Kairos-cryptoAI/kairos-persistence.git", rev = "2d88a351fc045de5b58bbf6acae209341096a850" }
 
 [project.scripts]
 kairos-text-scouts = "kairos_text.service:main"
@@ -56,6 +56,8 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+addopts = "-m 'not integration'"
+markers = ["integration: requires an explicitly opted-in localhost PostgreSQL test database"]
 testpaths = ["tests"]
 
 [tool.mypy]

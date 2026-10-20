@@ -25,6 +25,25 @@ sources ──▶ normalize ──▶ dedup ──▶ relevance (+top-K) ──�
 ```
 Example output (matches the spec): `{"topic": "SEC ETF", "sentiment": 0.85, "impact": "bullish"}`.
 
+## Durable no-resend boundary
+
+When using PostgreSQL-backed `DurableMessageBus`, Text Scouts requires the
+`controlled-runtime` database profile and an operator-provisioned
+`KAIROS_PROCESSING_SCOPE_SHA256`. Keep that lowercase SHA-256 stable for the
+same service, deployment, feed set and source-account identity; changing it
+starts a separate deduplication namespace. Durable item keys are hashes of the
+canonical event identity, so an RSS/GDELT/X copy of the same canonical story
+shares one claim. Raw article text, URLs and account names are not written by
+the news-processing ledger.
+
+Each relevant event is durably claimed before sentiment extraction. A claim is
+never automatically reclaimed: a process crash, provider timeout, or ambiguous
+publish outcome can therefore suppress that event on restart rather than risk
+resending it. New events continue normally, and the existing in-memory mode
+retains its test/development retry behavior. Do not rotate the scope hash to
+recover a fenced event; it creates a new namespace and removes the protection
+for all prior events in that scope.
+
 ## Sources
 | source | provider | cost | enabled |
 | --- | --- | --- | --- |

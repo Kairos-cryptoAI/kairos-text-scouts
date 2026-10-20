@@ -49,3 +49,96 @@ jobs:
         run: uv run --locked pytest -q --tb=short
       - name: Build wheel and source distribution
         run: uv build --no-sources
+
+  durable-news-integration:
+    name: Durable news PostgreSQL integration
+    runs-on: ubuntu-latest
+    services:
+      timescaledb:
+        image: timescale/timescaledb:2.28.3-pg16
+        env:
+          POSTGRES_USER: kairos
+          POSTGRES_PASSWORD: kairos_test
+          POSTGRES_DB: kairos
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kairos -d kairos"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      KAIROS_PERSISTENCE_DATABASE_URL: postgresql://kairos:kairos_test@localhost:5432/kairos_news_test_20261020
+      KAIROS_NEWS_TEST_DATABASE_URL: postgresql://kairos:kairos_test@localhost:5432/kairos_news_test_20261020
+      KAIROS_NEWS_TEST_DISPOSABLE_CONFIRM: CREATE_NEW_DISPOSABLE_NEWS_GATE
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.11"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Sync locked environment
+        run: uv sync --python 3.11 --locked --dev
+      - name: Require exact disposable database opt-in
+        shell: bash
+        run: |
+          test "$KAIROS_NEWS_TEST_DISPOSABLE_CONFIRM" = "CREATE_NEW_DISPOSABLE_NEWS_GATE"
+          python - <<'PY'
+          from urllib.parse import urlsplit
+          import os
+
+          expected = "kairos_news_test_20261020"
+          for key in ("KAIROS_NEWS_TEST_DATABASE_URL", "KAIROS_PERSISTENCE_DATABASE_URL"):
+              parsed = urlsplit(os.environ[key])
+              if parsed.scheme not in {"postgres", "postgresql"} or parsed.hostname not in {"127.0.0.1", "localhost"} or parsed.path != f"/{expected}" or parsed.query or parsed.fragment:
+                  raise SystemExit(f"{key} is not the fixed disposable localhost database")
+          if os.environ["KAIROS_NEWS_TEST_DATABASE_URL"] != os.environ["KAIROS_PERSISTENCE_DATABASE_URL"]:
+              raise SystemExit("database bootstrap and integration test targets differ")
+          PY
+      - name: Create fresh isolated controlled-runtime database
+        env:
+          PGPASSWORD: kairos_test
+        run: >-
+          psql --host localhost --username kairos --dbname kairos
+          --set ON_ERROR_STOP=1
+          --command "CREATE DATABASE kairos_news_test_20261020"
+      - name: Verify fresh database and prepare controlled-runtime schema 028
+        env:
+          PGPASSWORD: kairos_test
+        run: |
+          test "$(psql --host localhost --username kairos --dbname kairos_news_test_20261020 --tuples-only --no-align --command "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")" = "0"
+          uv run --python 3.11 --locked --dev python - <<'PY'
+          import asyncio
+          import os
+          from kairos_persistence import Database, MigrationProfile, PersistenceSettings
+
+          async def main():
+              database = Database(
+                  PersistenceSettings(database_url=os.environ["KAIROS_PERSISTENCE_DATABASE_URL"]),
+                  migration_profile=MigrationProfile.CONTROLLED_RUNTIME,
+              )
+              await database.connect()
+              try:
+                  await database.migrate()
+                  await database.verify_schema()
+                  assert await database.pool.fetchval("SELECT version FROM schema_migrations WHERE version='028_news_processing.sql'") == "028_news_processing.sql"
+              finally:
+                  await database.close()
+
+          asyncio.run(main())
+          PY
+      - name: Run real Text durable-news integration
+        run: uv run --python 3.11 --locked --dev pytest -q -m integration tests/test_durable_news_integration.py --junitxml=durable-news-results.xml
+      - name: Require native PostgreSQL execution (not skip)
+        run: |
+          uv run --python 3.11 --locked --dev python - <<'PY'
+          import xml.etree.ElementTree as ET
+          name = "test_postgres_claim_precedes_provider_and_survives_text_service_restart"
+          cases = [case for case in ET.parse("durable-news-results.xml").iter("testcase") if case.get("name") == name]
+          if len(cases) != 1 or any(cases[0].find(tag) is not None for tag in ("skipped", "failure", "error")):
+              raise SystemExit("DURABLE_NEWS_NATIVE_EXECUTION_REQUIRED")
+          print("DURABLE_NEWS_NATIVE_EXECUTION_PASS")
+          PY

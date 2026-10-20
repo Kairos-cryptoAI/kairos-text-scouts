@@ -16,8 +16,11 @@ each source failure is isolated so one flaky provider never blinds the layer.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Callable
 from datetime import datetime
+from typing import Protocol
+from uuid import uuid4
 
 from kairos_core.bus import MessageBus, build_bus
 from kairos_core.contracts import LLMHealthEvent
@@ -31,7 +34,7 @@ from kairos_persistence import (
 )
 
 from .config import TextSettings
-from .dedup import EventDeduplicator
+from .dedup import EventDeduplicator, dedup_key
 from .filter import LocalRelevanceFilter
 from .freshness import EventFreshnessFilter
 from .models import NewsItem
@@ -49,6 +52,14 @@ from .sources import (
 log = get_logger("text-scouts")
 
 
+class _NewsProcessingRepository(Protocol):
+    async def claim_batch(
+        self, scope_key: str, event_keys: tuple[str, ...], attempt_id: str
+    ) -> tuple[str, ...]: ...
+
+    async def complete_batch(self, scope_key: str, event_keys: tuple[str, ...], attempt_id: str) -> None: ...
+
+
 class TextScoutsService:
     def __init__(
         self,
@@ -58,6 +69,7 @@ class TextScoutsService:
         bus: MessageBus | None = None,
         sources: list[EventSource] | None = None,
         clock: Callable[[], datetime] | None = None,
+        news_processing_repository: _NewsProcessingRepository | None = None,
     ) -> None:
         self.settings = settings or TextSettings()
         if bus is not None:
@@ -71,6 +83,7 @@ class TextScoutsService:
             )
         self.normalizer = EventNormalizer()
         self.dedup = EventDeduplicator(self.settings.dedup_window_s)
+        self._news_processing_repository = news_processing_repository
         self.freshness = EventFreshnessFilter(
             self.settings.max_event_age_s,
             self.settings.max_future_skew_s,
@@ -154,6 +167,35 @@ class TextScoutsService:
         for source in unbound:
             source.attach_state(repository)
 
+    def _durable_processing_scope(self) -> str:
+        """Validate the durable scope/profile before any connection or source work."""
+        if not isinstance(self.bus, DurableMessageBus):
+            raise RuntimeError("durable news processing requires DurableMessageBus")
+        if self.bus.database.migration_profile.value != "controlled-runtime":
+            raise RuntimeError("durable news processing requires the controlled-runtime database profile")
+        scope_key = self.settings.processing_scope_sha256
+        if len(scope_key) != 64 or any(c not in "0123456789abcdef" for c in scope_key):
+            raise RuntimeError("durable news processing requires processing_scope_sha256")
+
+        return scope_key
+
+    def _durable_processing_repository(self) -> _NewsProcessingRepository:
+        """Resolve the durable repository after the database bus has started."""
+        if not isinstance(self.bus, DurableMessageBus) or not self.bus._started:
+            raise RuntimeError("durable news repository requires a started DurableMessageBus")
+        repository = self._news_processing_repository
+        if repository is None:
+            import kairos_persistence
+
+            repository_type = getattr(kairos_persistence, "NewsProcessingRepository", None)
+            if repository_type is None:
+                raise RuntimeError(
+                    "installed kairos-persistence lacks NewsProcessingRepository; upgrade the pinned runtime"
+                )
+            repository = repository_type(self.bus.database.pool)
+            self._news_processing_repository = repository
+        return repository
+
     async def _gather_with_sources(self) -> tuple[list[NewsItem], list[EventSource]]:
         active = [src for src in self.sources if src.enabled]
         results = await asyncio.gather(*(src.fetch() for src in active), return_exceptions=True)
@@ -176,6 +218,14 @@ class TextScoutsService:
 
     async def poll_once(self) -> int:
         """Run the pipeline once; returns the number of SentimentSignals published."""
+        durable_processing: tuple[str, _NewsProcessingRepository] | None = None
+        if self.settings.bus_backend != "memory" and not isinstance(self.bus, DurableMessageBus):
+            raise RuntimeError("non-memory Text Scouts requires DurableMessageBus")
+        if isinstance(self.bus, DurableMessageBus):
+            # Check the profile before _prepare_sources can connect and invoke DDL.
+            scope_key = self._durable_processing_scope()
+            await self.bus.start()
+            durable_processing = (scope_key, self._durable_processing_repository())
         await self._prepare_sources()
         raw, successful_sources = await self._gather_with_sources()
         commit_aware = [source for source in successful_sources if isinstance(source, CommitAwareEventSource)]
@@ -184,6 +234,31 @@ class TextScoutsService:
             candidates = self.dedup.collapse_batch(timely)
             unseen = self.dedup.filter_unseen(candidates)
             relevant = self.filter.select(unseen)
+            claimed_keys: tuple[str, ...] = ()
+            attempt_id: str | None = None
+            if durable_processing is not None:
+                scope_key, repository = durable_processing
+                key_to_item = {
+                    hashlib.sha256(dedup_key(item).encode("utf-8")).hexdigest(): item for item in relevant
+                }
+                requested_keys = tuple(sorted(key_to_item))
+                if requested_keys:
+                    attempt_id = hashlib.sha256(uuid4().bytes).hexdigest()
+                    claimed = await repository.claim_batch(scope_key, requested_keys, attempt_id)
+                    if (
+                        not isinstance(claimed, tuple)
+                        or any(not isinstance(key, str) or key not in key_to_item for key in claimed)
+                        or len(set(claimed)) != len(claimed)
+                    ):
+                        raise RuntimeError("news processing repository returned an invalid claim set")
+                    claimed_keys = tuple(sorted(claimed))
+                    relevant = [key_to_item[key] for key in claimed_keys]
+                    if len(requested_keys) > len(claimed_keys):
+                        log.info(
+                            "text.durable_dedup",
+                            claimed=len(claimed_keys),
+                            previously_fenced=len(requested_keys) - len(claimed_keys),
+                        )
             log.info(
                 "text.filtered",
                 fetched=len(raw),
@@ -192,13 +267,19 @@ class TextScoutsService:
                 kept=len(relevant),
             )
             published = 0
-            signals = await self.extractor.extract(relevant)
+            # Do not call (or reserve budget for) the provider when every event
+            # was already fenced by durable processing state.
+            signals = await self.extractor.extract(relevant) if relevant else []
             published_refs: set[str] = set()
             for sig in signals:
                 await self.bus.publish(Topics.SENTIMENT_SIGNAL, sig)
                 log.info("text.signal", topic=sig.topic, sentiment=sig.sentiment, impact=sig.impact.value)
                 published_refs.update(sig.sources)
                 published += 1
+            if durable_processing is not None and claimed_keys:
+                if attempt_id is None:
+                    raise RuntimeError("durable news claim is missing its attempt identity")
+                await durable_processing[1].complete_batch(durable_processing[0], claimed_keys, attempt_id)
             self.dedup.remember(
                 item for item in relevant if published_refs.intersection(item.provenance_refs)
             )

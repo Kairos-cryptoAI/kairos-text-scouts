@@ -16,6 +16,10 @@ class TextSettings(CoreSettings):
     top_k: int = Field(default=5, ge=1)  # keep ~5 of the incoming items
     relevance_threshold: float = Field(default=3.0, ge=0)
     dedup_window_s: float = Field(default=21600.0, gt=0)  # 6h rolling window for cross-poll dedup
+    # Required for durable polling. This is an operator-provisioned SHA-256
+    # binding the service/deployment/feed/account scope; never derive it from
+    # credentials at runtime or persist raw source identities with event keys.
+    processing_scope_sha256: str = Field(default="", pattern=r"^(?:[0-9a-f]{64})?$")
     max_event_age_s: float = Field(default=1800.0, ge=0)  # accept evidence up to 30 minutes old
     max_future_skew_s: float = Field(default=5.0, ge=0)  # match downstream ingestion skew bound
     allow_estimated_timestamps: bool = False

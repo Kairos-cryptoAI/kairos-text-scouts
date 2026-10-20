@@ -160,6 +160,338 @@ class _PartiallyAbstainingGateway:
         )
 
 
+class _DurableNewsProcessingRepository:
+    """Small contract fake; claims survive service instances like the DB rows."""
+
+    def __init__(self, events=None):
+        self.rows = {}
+        self.claim_calls = []
+        self.events = events
+
+    async def claim_batch(self, scope_key, event_keys, attempt_id):
+        if self.events is not None:
+            self.events.append("claim")
+        self.claim_calls.append((scope_key, event_keys, attempt_id))
+        claimed = []
+        for key in event_keys:
+            identity = (scope_key, key)
+            if identity not in self.rows:
+                self.rows[identity] = (attempt_id, "CLAIMED")
+                claimed.append(key)
+        return tuple(claimed)
+
+    async def complete_batch(self, scope_key, event_keys, attempt_id):
+        if self.events is not None:
+            self.events.append("complete")
+        for key in event_keys:
+            identity = (scope_key, key)
+            assert self.rows[identity] == (attempt_id, "CLAIMED")
+            self.rows[identity] = (attempt_id, "COMPLETED")
+
+
+def _durable_test_bus(*, fail_publish=False, events=None):
+    from kairos_core.bus import InMemoryBus
+    from kairos_persistence import DurableMessageBus, MigrationProfile
+
+    bus = DurableMessageBus(
+        InMemoryBus(),
+        service_name="kairos-text-scouts-test",
+        database=SimpleNamespace(migration_profile=MigrationProfile.CONTROLLED_RUNTIME, pool=None),
+    )
+    bus.published = []
+
+    async def start():
+        bus._started = True
+        if events is not None:
+            events.append("start")
+
+    bus.start = start
+
+    async def publish(topic, message):
+        if events is not None:
+            events.append("publish")
+        if fail_publish:
+            raise RuntimeError("publish outcome unknown")
+        bus.published.append(message)
+
+    bus.publish = publish
+    return bus
+
+
+def test_durable_news_claim_survives_restart_and_unknown_publish_is_never_resent():
+    now = datetime.now(UTC)
+    item = NewsItem(
+        title="SEC approves spot Bitcoin ETF",
+        url="https://news.test/etf?id=1&utm_source=rss",
+        source="feed-a",
+        source_kind="rss",
+        published_at=now,
+        timestamp_is_estimated=False,
+    )
+    repository = _DurableNewsProcessingRepository()
+    settings = TextSettings(bus_backend="redis", processing_scope_sha256="a" * 64, _env_file=None)
+    first_gateway = _FakeGateway()
+    first = TextScoutsService(
+        settings,
+        bus=_durable_test_bus(fail_publish=True),
+        gateway=first_gateway,
+        sources=[_StubSource([item])],
+        news_processing_repository=repository,
+    )
+    with pytest.raises(RuntimeError, match="publish outcome unknown"):
+        asyncio.run(first.poll_once())
+    assert repository.rows
+    assert all(state == "CLAIMED" for _attempt, state in repository.rows.values())
+
+    class _CountingGateway(_FakeGateway):
+        calls = 0
+
+        async def complete(self, **kwargs):
+            self.calls += 1
+            return await super().complete(**kwargs)
+
+    second_gateway = _CountingGateway()
+    restarted = TextScoutsService(
+        settings,
+        bus=_durable_test_bus(),
+        gateway=second_gateway,
+        sources=[_StubSource([item])],
+        news_processing_repository=repository,
+    )
+    assert asyncio.run(restarted.poll_once()) == 0
+    assert second_gateway.calls == 0
+    assert restarted.bus.published == []
+    assert len(repository.claim_calls) == 2
+
+
+def test_durable_adapter_resolves_database_pool_only_after_bus_start(monkeypatch):
+    from kairos_core.bus import InMemoryBus
+    from kairos_persistence import DurableMessageBus, MigrationProfile
+
+    events = []
+    database_state = {"started": False}
+
+    class _Database:
+        migration_profile = MigrationProfile.CONTROLLED_RUNTIME
+
+        @property
+        def pool(self):
+            if not database_state["started"]:
+                raise AssertionError("pool must not be accessed before durable bus start")
+            return object()
+
+    bus = DurableMessageBus(InMemoryBus(), service_name="kairos-text-scouts-test", database=_Database())
+
+    async def start():
+        database_state["started"] = True
+        bus._started = True
+        events.append("start")
+
+    async def publish(topic, message):
+        events.append("publish")
+
+    bus.start = start
+    bus.publish = publish
+
+    class _Repository(_DurableNewsProcessingRepository):
+        def __init__(self, pool):
+            assert pool is not None
+            events.append("repository")
+            super().__init__(events)
+
+    monkeypatch.setattr("kairos_persistence.NewsProcessingRepository", _Repository, raising=False)
+
+    class _OrderedGateway(_FakeGateway):
+        async def complete(self, **kwargs):
+            events.append("provider")
+            return await super().complete(**kwargs)
+
+    now = datetime.now(UTC)
+    item = NewsItem(
+        title="SEC approves spot Bitcoin ETF",
+        url="https://news.test/etf",
+        published_at=now,
+        timestamp_is_estimated=False,
+    )
+    service = TextScoutsService(
+        TextSettings(bus_backend="redis", processing_scope_sha256="e" * 64, _env_file=None),
+        bus=bus,
+        gateway=_OrderedGateway(),
+        sources=[_StubSource([item])],
+    )
+    assert asyncio.run(service.poll_once()) == 1
+    assert events.index("start") < events.index("repository")
+    assert events.index("claim") < events.index("provider") < events.index("publish")
+    assert events.index("publish") < events.index("complete")
+
+
+def test_durable_processing_rejects_missing_scope_before_start_or_fetch():
+    source = _StubSource([])
+    source.fetch_calls = 0
+
+    async def fetch():
+        source.fetch_calls += 1
+        return []
+
+    source.fetch = fetch
+    bus = _durable_test_bus()
+    service = TextScoutsService(
+        TextSettings(bus_backend="redis", _env_file=None),
+        bus=bus,
+        gateway=_FakeGateway(),
+        sources=[source],
+        news_processing_repository=_DurableNewsProcessingRepository(),
+    )
+    with pytest.raises(RuntimeError, match="processing_scope_sha256"):
+        asyncio.run(service.poll_once())
+    assert bus._started is False
+    assert source.fetch_calls == 0
+
+
+def test_durable_processing_rejects_malformed_claim_before_extraction():
+    class _MalformedRepository(_DurableNewsProcessingRepository):
+        async def claim_batch(self, scope_key, event_keys, attempt_id):
+            return ("not-a-requested-key",)
+
+    class _CountingGateway(_FakeGateway):
+        calls = 0
+
+        async def complete(self, **kwargs):
+            self.calls += 1
+            return await super().complete(**kwargs)
+
+    gateway = _CountingGateway()
+    now = datetime.now(UTC)
+    item = NewsItem(
+        title="SEC approves spot Bitcoin ETF",
+        url="https://news.test/etf",
+        published_at=now,
+        timestamp_is_estimated=False,
+    )
+    service = TextScoutsService(
+        TextSettings(bus_backend="redis", processing_scope_sha256="f" * 64, _env_file=None),
+        bus=_durable_test_bus(),
+        gateway=gateway,
+        sources=[_StubSource([item])],
+        news_processing_repository=_MalformedRepository(),
+    )
+    with pytest.raises(RuntimeError, match="invalid claim set"):
+        asyncio.run(service.poll_once())
+    assert gateway.calls == 0
+
+
+def test_abstention_and_completion_failure_remain_fenced_across_restart():
+    class _FailingCompleteRepository(_DurableNewsProcessingRepository):
+        async def complete_batch(self, scope_key, event_keys, attempt_id):
+            raise RuntimeError("completion outcome unknown")
+
+    class _CountingAbstainingGateway(_AbstainingGateway):
+        calls = 0
+
+        async def complete(self, **kwargs):
+            self.calls += 1
+            return await super().complete(**kwargs)
+
+    repository = _FailingCompleteRepository()
+    now = datetime.now(UTC)
+    item = NewsItem(
+        title="SEC Bitcoin ETF hearing",
+        url="https://news.test/hearing",
+        published_at=now,
+        timestamp_is_estimated=False,
+    )
+    settings = TextSettings(bus_backend="redis", processing_scope_sha256="1" * 64, _env_file=None)
+    first_gateway = _CountingAbstainingGateway()
+    first = TextScoutsService(
+        settings,
+        bus=_durable_test_bus(),
+        gateway=first_gateway,
+        sources=[_StubSource([item])],
+        news_processing_repository=repository,
+    )
+    with pytest.raises(RuntimeError, match="completion outcome unknown"):
+        asyncio.run(first.poll_once())
+    assert first_gateway.calls == 1
+    assert all(state == "CLAIMED" for _attempt, state in repository.rows.values())
+
+    second_gateway = _CountingAbstainingGateway()
+    restarted = TextScoutsService(
+        settings,
+        bus=_durable_test_bus(),
+        gateway=second_gateway,
+        sources=[_StubSource([item])],
+        news_processing_repository=repository,
+    )
+    assert asyncio.run(restarted.poll_once()) == 0
+    assert second_gateway.calls == 0
+
+
+def test_durable_news_claim_deduplicates_across_source_copies():
+    now = datetime.now(UTC)
+    items = [
+        NewsItem(
+            title="SEC approves spot Bitcoin ETF",
+            url="https://news.test/etf?id=1&utm_source=rss",
+            source="feed-a",
+            source_kind="rss",
+            published_at=now,
+            timestamp_is_estimated=False,
+        ),
+        NewsItem(
+            title="SEC approves spot Bitcoin ETF",
+            url="https://news.test/etf?id=1&utm_source=gdelt",
+            source="gdelt",
+            source_kind="gdelt",
+            published_at=now,
+            timestamp_is_estimated=False,
+        ),
+    ]
+    repository = _DurableNewsProcessingRepository()
+    service = TextScoutsService(
+        TextSettings(bus_backend="redis", processing_scope_sha256="b" * 64, _env_file=None),
+        bus=_durable_test_bus(),
+        gateway=_FakeGateway(),
+        sources=[_StubSource(items)],
+        news_processing_repository=repository,
+    )
+    assert asyncio.run(service.poll_once()) == 1
+    assert len(repository.rows) == 1
+    assert next(iter(repository.rows.values()))[1] == "COMPLETED"
+
+
+def test_durable_news_refuses_non_controlled_profile_before_start():
+    from kairos_core.bus import InMemoryBus
+    from kairos_persistence import DurableMessageBus, MigrationProfile
+
+    bus = DurableMessageBus(
+        InMemoryBus(),
+        service_name="kairos-text-scouts-test",
+        database=SimpleNamespace(migration_profile=MigrationProfile.RUNTIME, pool=None),
+    )
+    service = TextScoutsService(
+        TextSettings(bus_backend="redis", processing_scope_sha256="c" * 64, _env_file=None),
+        bus=bus,
+        gateway=_FakeGateway(),
+        sources=[],
+    )
+    with pytest.raises(RuntimeError, match="controlled-runtime"):
+        asyncio.run(service.poll_once())
+    assert bus._started is False
+
+
+def test_nonmemory_settings_refuse_an_injected_nondurable_bus():
+    from kairos_core.bus import InMemoryBus
+
+    service = TextScoutsService(
+        TextSettings(bus_backend="redis", processing_scope_sha256="d" * 64, _env_file=None),
+        bus=InMemoryBus(),
+        gateway=_FakeGateway(),
+        sources=[],
+    )
+    with pytest.raises(RuntimeError, match="requires DurableMessageBus"):
+        asyncio.run(service.poll_once())
+
+
 def test_poll_once_aggregates_dedups_filters_and_publishes():
     now = datetime.now(UTC)
     items = [
