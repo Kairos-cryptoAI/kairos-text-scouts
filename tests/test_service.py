@@ -325,7 +325,8 @@ def test_durable_adapter_resolves_database_pool_only_after_bus_start(monkeypatch
     assert events.index("publish") < events.index("complete")
 
 
-def test_durable_processing_rejects_missing_scope_before_start_or_fetch():
+@pytest.mark.parametrize("scope_key", ["", "0" * 64])
+def test_durable_processing_rejects_missing_scope_before_start_or_fetch(scope_key):
     source = _StubSource([])
     source.fetch_calls = 0
 
@@ -336,13 +337,13 @@ def test_durable_processing_rejects_missing_scope_before_start_or_fetch():
     source.fetch = fetch
     bus = _durable_test_bus()
     service = TextScoutsService(
-        TextSettings(bus_backend="redis", _env_file=None),
+        TextSettings(bus_backend="redis", processing_scope_sha256=scope_key, _env_file=None),
         bus=bus,
         gateway=_FakeGateway(),
         sources=[source],
         news_processing_repository=_DurableNewsProcessingRepository(),
     )
-    with pytest.raises(RuntimeError, match="processing_scope_sha256"):
+    with pytest.raises(RuntimeError, match="processing_scope_sha256|synthetic processing scope"):
         asyncio.run(service.poll_once())
     assert bus._started is False
     assert source.fetch_calls == 0

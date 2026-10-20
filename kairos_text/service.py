@@ -176,6 +176,8 @@ class TextScoutsService:
         scope_key = self.settings.processing_scope_sha256
         if len(scope_key) != 64 or any(c not in "0123456789abcdef" for c in scope_key):
             raise RuntimeError("durable news processing requires processing_scope_sha256")
+        if scope_key == "0" * 64:
+            raise RuntimeError("synthetic processing scope is not a deployment identity")
 
         return scope_key
 
