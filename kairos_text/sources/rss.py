@@ -9,6 +9,7 @@ of fields we need; swap in ``feedparser`` behind the same ``fetch`` for producti
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 
@@ -18,6 +19,13 @@ from defusedxml.common import DefusedXmlException
 from kairos_core.logging import get_logger
 
 from ..models import NewsItem
+from ..native_capture import (
+    MAX_SOURCE_BODY_BYTES,
+    NativeTextCaptureSink,
+    checked_clock,
+    emit_rss_response,
+    utc_clock_ms,
+)
 
 _TAG = re.compile(r"<[^>]+>")
 _UA = "kairos-text-scouts/0.1 (+https://github.com/Kairos-cryptoAI)"
@@ -36,9 +44,18 @@ def _parse_date(value: str) -> datetime | None:
 class RSSSource:
     name = "rss"
 
-    def __init__(self, feeds: list[str], *, enabled: bool = True) -> None:
-        self.feeds = feeds
+    def __init__(
+        self,
+        feeds: list[str],
+        *,
+        enabled: bool = True,
+        capture_sink: NativeTextCaptureSink | None = None,
+        clock_ms: Callable[[], int] = utc_clock_ms,
+    ) -> None:
+        self.feeds = list(feeds)
         self._enabled = enabled
+        self.capture_sink = capture_sink
+        self._clock_ms = clock_ms
 
     @property
     def enabled(self) -> bool:
@@ -74,10 +91,40 @@ class RSSSource:
         out: list[NewsItem] = []
         async with aiohttp.ClientSession(headers={"User-Agent": _UA}) as session:
             for feed in self.feeds:
+                captured = None
                 try:
-                    async with session.get(feed, timeout=_TIMEOUT) as resp:
-                        if resp.status == 200:
-                            out.extend(self._parse(await resp.text(), feed))
-                except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+                    requested_at_ms = checked_clock(self._clock_ms())
+                    async with session.get(
+                        feed, timeout=_TIMEOUT, allow_redirects=self.capture_sink is None
+                    ) as resp:
+                        chunks = []
+                        size = 0
+                        async for chunk in resp.content.iter_chunked(65_536):
+                            size += len(chunk)
+                            if size > MAX_SOURCE_BODY_BYTES:
+                                raise ValueError("RSS response exceeds the bounded native body limit")
+                            chunks.append(chunk)
+                        body = b"".join(chunks)
+                        received_at_ms = checked_clock(self._clock_ms())
+                        encoding = resp.charset or "utf-8"
+                        items = self._parse(body.decode(encoding), feed) if resp.status == 200 else []
+                        captured = (body, encoding, resp.status, requested_at_ms, received_at_ms, items)
+                except (aiohttp.ClientError, TimeoutError, ValueError, LookupError) as exc:
                     log.warning("rss_fetch_failed", feed=feed, error=str(exc))
+                # A persistence failure must not return parsed-but-unretained items.
+                if captured is not None:
+                    body, encoding, status, requested, received, items = captured
+                    if self.capture_sink is not None:
+                        emit_rss_response(
+                            self.capture_sink,
+                            source_name=feed,
+                            body=body,
+                            encoding=encoding,
+                            status=status,
+                            requested_at_ms=requested,
+                            received_at_ms=received,
+                            captured_at_ms=checked_clock(self._clock_ms()),
+                            items=items,
+                        )
+                    out.extend(items)
         return out
